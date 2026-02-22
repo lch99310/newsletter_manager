@@ -37,4 +37,3 @@ jobs:
           git add data/cache.json
           git diff --cached --quiet || git commit -m "chore: update article cache [skip ci]"
           git push
-
