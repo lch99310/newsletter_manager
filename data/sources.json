@@ -2,7 +2,8 @@
   "sources": [
     {
       "url": "https://www.latepost.com/",
-      "name": "LatePost (晚点)"
+      "name": "LatePost (晚点)",
+      "strategy": "latepost"
     },
     {
       "url": "https://lch99310.github.io/chunghao_lee/posts/",
