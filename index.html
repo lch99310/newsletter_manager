@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Newsletter Manager</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --ink:#0a0a0a;
+  --paper:#faf9f6;
+  --warm:#e8590c;
+  --warm-light:#fff4ef;
+  --mid:#6b6b6b;
+  --light:#e8e6e1;
+  --card:#ffffff;
+  --serif:'Instrument Serif',Georgia,'Noto Serif SC',serif;
+  --sans:'DM Sans',-apple-system,BlinkMacSystemFont,'Noto Sans SC',sans-serif;
+  --max:860px;
+}
+html{scroll-behavior:smooth;font-size:16px}
+body{
+  font-family:var(--sans);
+  background:var(--paper);
+  color:var(--ink);
+  line-height:1.6;
+  -webkit-font-smoothing:antialiased;
+  overflow-x:hidden;
+}
+
+/* ── REVEAL ANIMATION ─────────────────── */
+.reveal{opacity:0;transform:translateY(24px);transition:opacity .7s cubic-bezier(.22,1,.36,1),transform .7s cubic-bezier(.22,1,.36,1)}
+.reveal.visible{opacity:1;transform:translateY(0)}
+.reveal:nth-child(2){transition-delay:.08s}
+.reveal:nth-child(3){transition-delay:.16s}
+.reveal:nth-child(4){transition-delay:.24s}
+
+/* ── NAV ──────────────────────────────── */
+nav{
+  position:fixed;top:0;left:0;right:0;z-index:100;
+  background:rgba(250,249,246,.85);
+  backdrop-filter:blur(12px);
+  border-bottom:1px solid var(--light);
+  padding:0 24px;
+}
+nav .inner{
+  max-width:var(--max);margin:0 auto;
+  display:flex;align-items:center;justify-content:space-between;
+  height:56px;
+}
+nav .mark{
+  font-family:var(--serif);font-size:18px;letter-spacing:-.02em;
+  display:flex;align-items:center;gap:10px;
+  text-decoration:none;color:var(--ink);
+}
+nav .mark .dot{width:8px;height:8px;border-radius:50%;background:var(--warm);display:inline-block}
+nav .links{display:flex;gap:24px}
+nav .links a{
+  font-size:13px;font-weight:500;color:var(--mid);text-decoration:none;
+  letter-spacing:.01em;transition:color .2s;
+}
+nav .links a:hover{color:var(--ink)}
+
+/* ── HERO ─────────────────────────────── */
+.hero{
+  max-width:var(--max);margin:0 auto;
+  padding:140px 24px 80px;
+}
+.hero .overline{
+  font-size:11px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--warm);margin-bottom:20px;
+  display:flex;align-items:center;gap:8px;
+}
+.hero .overline::before{content:'';width:24px;height:1px;background:var(--warm)}
+.hero h1{
+  font-family:var(--serif);
+  font-size:clamp(42px,7vw,72px);
+  line-height:1.05;letter-spacing:-.03em;
+  font-weight:400;
+  max-width:640px;
+  margin-bottom:24px;
+}
+.hero h1 em{font-style:italic;color:var(--warm)}
+.hero .desc{
+  font-size:17px;line-height:1.7;
+  color:var(--mid);max-width:500px;
+  font-weight:300;
+}
+
+/* ── DIVIDER ──────────────────────────── */
+.divider{
+  max-width:var(--max);margin:0 auto;padding:0 24px;
+}
+.divider hr{
+  border:none;border-top:1px solid var(--light);
+}
+
+/* ── STEPS ────────────────────────────── */
+.steps-section{
+  max-width:var(--max);margin:0 auto;
+  padding:64px 24px;
+}
+.steps-section .section-label{
+  font-size:11px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--mid);margin-bottom:40px;
+}
+.steps{
+  display:grid;grid-template-columns:repeat(3,1fr);gap:2px;
+  background:var(--light);
+  border:1px solid var(--light);
+  border-radius:12px;
+  overflow:hidden;
+}
+.step{
+  background:var(--card);padding:36px 28px;
+  display:flex;flex-direction:column;
+}
+.step-num{
+  font-family:var(--serif);font-size:48px;font-style:italic;
+  color:var(--light);line-height:1;margin-bottom:16px;
+}
+.step h3{
+  font-size:15px;font-weight:600;margin-bottom:8px;letter-spacing:-.01em;
+}
+.step p{
+  font-size:13px;color:var(--mid);line-height:1.6;font-weight:300;
+}
+.step code{
+  display:inline-block;margin-top:10px;
+  font-size:12px;background:var(--paper);
+  padding:3px 8px;border-radius:4px;
+  font-family:'SF Mono','Fira Code',monospace;
+  color:var(--warm);border:1px solid var(--light);
+}
+
+/* ── CONFIG SECTION ───────────────────── */
+.config-section{
+  max-width:var(--max);margin:0 auto;
+  padding:64px 24px;
+}
+.config-section .section-label{
+  font-size:11px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--mid);margin-bottom:40px;
+}
+.config-grid{
+  display:grid;grid-template-columns:1fr 1fr;gap:24px;
+}
+.config-card{
+  background:var(--card);
+  border:1px solid var(--light);
+  border-radius:12px;
+  overflow:hidden;
+}
+.config-card-header{
+  padding:20px 24px;
+  border-bottom:1px solid var(--light);
+  display:flex;align-items:center;justify-content:space-between;
+}
+.config-card-header h3{font-size:14px;font-weight:600;letter-spacing:-.01em}
+.config-card-body{padding:20px 24px;min-height:120px}
+.config-card-footer{
+  padding:14px 24px;
+  border-top:1px solid var(--light);
+  background:var(--paper);
+}
+
+.source-item{
+  display:flex;align-items:baseline;gap:12px;
+  padding:10px 0;
+  border-bottom:1px solid rgba(0,0,0,.04);
+}
+.source-item:last-child{border-bottom:none}
+.source-item .s-name{
+  font-weight:600;font-size:14px;white-space:nowrap;
+}
+.source-item .s-url{
+  font-size:12px;color:var(--mid);
+  font-family:'SF Mono','Fira Code',monospace;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+
+.sub-item{
+  padding:8px 0;
+  border-bottom:1px solid rgba(0,0,0,.04);
+  font-size:14px;
+  font-family:'SF Mono','Fira Code',monospace;
+  color:var(--mid);
+}
+.sub-item:last-child{border-bottom:none}
+
+.empty-state{
+  text-align:center;padding:32px 16px;
+  color:var(--mid);font-size:13px;
+}
+.empty-state .empty-icon{
+  font-size:28px;margin-bottom:8px;opacity:.4;
+}
+
+.btn-edit{
+  display:inline-flex;align-items:center;gap:6px;
+  font-size:12px;font-weight:600;
+  color:var(--ink);text-decoration:none;
+  padding:7px 14px;border-radius:6px;
+  border:1px solid var(--light);
+  background:var(--card);
+  transition:all .2s;
+  cursor:pointer;font-family:var(--sans);
+}
+.btn-edit:hover{border-color:var(--ink);background:var(--ink);color:#fff}
+.btn-edit svg{width:14px;height:14px}
+
+/* ── SETUP GUIDE ──────────────────────── */
+.guide-section{
+  max-width:var(--max);margin:0 auto;
+  padding:64px 24px 80px;
+}
+.guide-section .section-label{
+  font-size:11px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--mid);margin-bottom:40px;
+}
+.guide-list{
+  display:flex;flex-direction:column;
+  border:1px solid var(--light);
+  border-radius:12px;
+  overflow:hidden;
+  background:var(--card);
+}
+.guide-item{
+  border-bottom:1px solid var(--light);
+}
+.guide-item:last-child{border-bottom:none}
+.guide-toggle{
+  width:100%;
+  display:flex;align-items:center;justify-content:space-between;
+  padding:18px 24px;
+  background:none;border:none;cursor:pointer;
+  font-family:var(--sans);font-size:14px;font-weight:500;
+  color:var(--ink);text-align:left;
+  transition:background .15s;
+}
+.guide-toggle:hover{background:var(--paper)}
+.guide-toggle .num{
+  font-family:var(--serif);font-style:italic;
+  color:var(--mid);margin-right:14px;font-size:16px;
+}
+.guide-toggle .chevron{
+  transition:transform .3s;color:var(--mid);flex-shrink:0;
+}
+.guide-item.open .guide-toggle .chevron{transform:rotate(180deg)}
+.guide-body{
+  max-height:0;overflow:hidden;
+  transition:max-height .4s cubic-bezier(.22,1,.36,1);
+}
+.guide-item.open .guide-body{max-height:600px}
+.guide-body-inner{
+  padding:0 24px 20px 52px;
+  font-size:13px;line-height:1.7;color:var(--mid);
+}
+.guide-body-inner a{color:var(--warm);font-weight:500;text-decoration:none}
+.guide-body-inner a:hover{text-decoration:underline}
+.guide-body-inner code{
+  font-size:12px;background:var(--paper);padding:2px 7px;
+  border-radius:3px;font-family:'SF Mono','Fira Code',monospace;
+  border:1px solid var(--light);
+}
+.guide-body-inner pre{
+  background:#1a1a1a;color:#e8e6e1;
+  padding:16px 20px;border-radius:8px;
+  margin:12px 0;overflow-x:auto;
+  font-size:12px;line-height:1.7;
+  font-family:'SF Mono','Fira Code',monospace;
+}
+.guide-body-inner pre .cm{color:#666}
+.guide-body-inner pre .hl{color:var(--warm)}
+
+/* ── FOOTER ───────────────────────────── */
+footer{
+  border-top:1px solid var(--light);
+  padding:40px 24px;
+  text-align:center;
+}
+footer p{font-size:12px;color:var(--mid);font-weight:300}
+footer a{color:var(--mid);text-decoration:none;border-bottom:1px solid var(--light)}
+footer a:hover{color:var(--ink);border-color:var(--ink)}
+
+/* ── RESPONSIVE ───────────────────────── */
+@media(max-width:700px){
+  .steps{grid-template-columns:1fr}
+  .config-grid{grid-template-columns:1fr}
+  .hero h1{font-size:38px}
+  nav .links{gap:16px}
+}
+</style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav>
+  <div class="inner">
+    <a href="#" class="mark"><span class="dot"></span> Newsletter Manager</a>
+    <div class="links">
+      <a href="#how">How it works</a>
+      <a href="#config">Configuration</a>
+      <a href="#setup">Setup Guide</a>
+    </div>
+  </div>
+</nav>
+
+<!-- HERO -->
+<section class="hero">
+  <div class="reveal">
+    <div class="overline">GitHub-native newsletter system</div>
+  </div>
+  <h1 class="reveal">Turn any website into <em>email&nbsp;updates</em></h1>
+  <p class="desc reveal">
+    Add website URLs, push to GitHub, and receive daily email digests when those sites publish new content.<br>
+    No servers. No databases. Just GitHub Actions + Resend.
+  </p>
+</section>
+
+<div class="divider"><hr></div>
+
+<!-- STEPS -->
+<section class="steps-section" id="how">
+  <div class="section-label reveal">How it works / 運作方式</div>
+  <div class="steps reveal">
+    <div class="step">
+      <div class="step-num">1</div>
+      <h3>Add Sources / 新增來源</h3>
+      <p>Edit the sources file to add website URLs you want to follow.</p>
+      <code>data/sources.json</code>
+    </div>
+    <div class="step">
+      <div class="step-num">2</div>
+      <h3>Add Your Email / 輸入信箱</h3>
+      <p>Add your email address to the subscribers list.</p>
+      <code>data/subscribers.json</code>
+    </div>
+    <div class="step">
+      <div class="step-num">3</div>
+      <h3>Auto Updates / 自動更新</h3>
+      <p>GitHub Actions checks daily. New content? You get an email. Nothing new? No spam.</p>
+      <code>cron: 0 8 * * *</code>
+    </div>
+  </div>
+</section>
+
+<div class="divider"><hr></div>
+
+<!-- CONFIG -->
+<section class="config-section" id="config">
+  <div class="section-label reveal">Current Configuration / 目前設定</div>
+  <div class="config-grid reveal">
+    <!-- Sources Card -->
+    <div class="config-card">
+      <div class="config-card-header">
+        <h3>Your Sources / 訂閱來源</h3>
+        <span id="sourceCount" style="font-size:12px;color:var(--mid)"></span>
+      </div>
+      <div class="config-card-body" id="sourcesBody">
+        <div class="empty-state">
+          <div class="empty-icon">...</div>
+          Loading...
+        </div>
+      </div>
+      <div class="config-card-footer">
+        <a class="btn-edit" id="editSourcesBtn" href="#" target="_blank">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+          Edit on GitHub
+        </a>
+      </div>
+    </div>
+    <!-- Subscribers Card -->
+    <div class="config-card">
+      <div class="config-card-header">
+        <h3>Your Subscribers / 收件人</h3>
+        <span id="subCount" style="font-size:12px;color:var(--mid)"></span>
+      </div>
+      <div class="config-card-body" id="subscribersBody">
+        <div class="empty-state">
+          <div class="empty-icon">...</div>
+          Loading...
+        </div>
+      </div>
+      <div class="config-card-footer">
+        <a class="btn-edit" id="editSubsBtn" href="#" target="_blank">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+          Edit on GitHub
+        </a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="divider"><hr></div>
+
+<!-- SETUP GUIDE -->
+<section class="guide-section" id="setup">
+  <div class="section-label reveal">Setup Guide / 設定教學</div>
+  <div class="guide-list reveal">
+
+    <div class="guide-item open">
+      <button class="guide-toggle" onclick="toggleGuide(this)">
+        <span><span class="num">01</span> Fork this repository / 複製此專案</span>
+        <svg class="chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+      </button>
+      <div class="guide-body">
+        <div class="guide-body-inner">
+          Click the <strong>Fork</strong> button at the top-right of the GitHub repo page. This creates your own copy where GitHub Actions will run on your behalf.
+        </div>
+      </div>
+    </div>
+
+    <div class="guide-item">
+      <button class="guide-toggle" onclick="toggleGuide(this)">
+        <span><span class="num">02</span> Get a Resend API Key / 取得 Resend API 金鑰</span>
+        <svg class="chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+      </button>
+      <div class="guide-body">
+        <div class="guide-body-inner">
+          Go to <a href="https://resend.com" target="_blank">resend.com</a> and create a free account. In the dashboard, go to <strong>API Keys</strong> and create a new key.<br><br>
+          Free tier: <strong>100 emails/day, 3,000/month</strong> &mdash; more than enough for daily newsletter checks.
+        </div>
+      </div>
+    </div>
+
+    <div class="guide-item">
+      <button class="guide-toggle" onclick="toggleGuide(this)">
+        <span><span class="num">03</span> Add GitHub Secrets / 設定 GitHub Secrets</span>
+        <svg class="chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+      </button>
+      <div class="guide-body">
+        <div class="guide-body-inner">
+          In your forked repo, go to <strong>Settings &rarr; Secrets and variables &rarr; Actions</strong>. Add these two secrets:
+          <pre><span class="hl">RESEND_API_KEY</span>  <span class="cm">= your Resend API key</span>
+<span class="hl">FROM_EMAIL</span>     <span class="cm">= onboarding@resend.dev</span></pre>
+          Note: Use <code>onboarding@resend.dev</code> for testing. Once you verify a custom domain on Resend, you can use your own email address.
+        </div>
+      </div>
+    </div>
+
+    <div class="guide-item">
+      <button class="guide-toggle" onclick="toggleGuide(this)">
+        <span><span class="num">04</span> Enable GitHub Actions / 啟用 GitHub Actions</span>
+        <svg class="chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+      </button>
+      <div class="guide-body">
+        <div class="guide-body-inner">
+          Forked repos have Actions disabled by default. Go to the <strong>Actions</strong> tab and click <strong>"I understand my workflows, go ahead and enable them"</strong>.
+        </div>
+      </div>
+    </div>
+
+    <div class="guide-item">
+      <button class="guide-toggle" onclick="toggleGuide(this)">
+        <span><span class="num">05</span> Edit sources and subscribers / 編輯來源與收件人</span>
+        <svg class="chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+      </button>
+      <div class="guide-body">
+        <div class="guide-body-inner">
+          Edit <code>data/sources.json</code> to add websites:
+          <pre>{
+  "sources": [
+    {
+      "url": "<span class="hl">https://www.latepost.com/</span>",
+      "name": "<span class="hl">LatePost (晚点)</span>"
+    },
+    {
+      "url": "<span class="hl">https://example.com/blog</span>",
+      "name": "<span class="hl">Example Blog</span>"
+    }
+  ]
+}</pre>
+          Edit <code>data/subscribers.json</code> to add your email:
+          <pre>{
+  "subscribers": [
+    "<span class="hl">your-real-email@gmail.com</span>"
+  ]
+}</pre>
+          Use the <strong>Edit on GitHub</strong> buttons in the Configuration section above for quick access.
+        </div>
+      </div>
+    </div>
+
+    <div class="guide-item">
+      <button class="guide-toggle" onclick="toggleGuide(this)">
+        <span><span class="num">06</span> Test it / 測試</span>
+        <svg class="chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+      </button>
+      <div class="guide-body">
+        <div class="guide-body-inner">
+          Go to the <strong>Actions</strong> tab, click <strong>"Check for Updates"</strong> workflow on the left, then click <strong>"Run workflow"</strong> dropdown on the right and hit the green button.<br><br>
+          Check the workflow logs to see results. If new articles are found, you'll receive an email.
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- FOOTER -->
+<footer>
+  <p>Powered by GitHub Actions + <a href="https://resend.com" target="_blank">Resend</a></p>
+</footer>
+
+<script>
+// ── Detect repo URL ─────────────────────────────
+function getRepoUrl() {
+  const host = window.location.hostname;
+  const path = window.location.pathname;
+  // GitHub Pages: username.github.io/repo-name/
+  if (host.endsWith('.github.io')) {
+    const user = host.replace('.github.io', '');
+    const repo = path.split('/').filter(Boolean)[0] || '';
+    if (repo) return `https://github.com/${user}/${repo}`;
+    return `https://github.com/${user}/${user}.github.io`;
+  }
+  // Fallback: user can set this
+  return 'https://github.com/YOUR_USERNAME/newsletter-manager';
+}
+
+const repoUrl = getRepoUrl();
+document.getElementById('editSourcesBtn').href = `${repoUrl}/edit/main/data/sources.json`;
+document.getElementById('editSubsBtn').href = `${repoUrl}/edit/main/data/subscribers.json`;
+
+// ── Load live config ────────────────────────────
+async function loadConfig() {
+  // Sources
+  try {
+    const res = await fetch('./data/sources.json');
+    const data = await res.json();
+    const body = document.getElementById('sourcesBody');
+    const count = document.getElementById('sourceCount');
+    if (data.sources && data.sources.length > 0) {
+      count.textContent = `${data.sources.length} source${data.sources.length > 1 ? 's' : ''}`;
+      body.innerHTML = data.sources.map(s => `
+        <div class="source-item">
+          <span class="s-name">${esc(s.name)}</span>
+          <span class="s-url">${esc(s.url)}</span>
+        </div>
+      `).join('');
+    } else {
+      count.textContent = '';
+      body.innerHTML = `<div class="empty-state"><div class="empty-icon">+</div>No sources added yet.<br>Click "Edit on GitHub" to add websites.</div>`;
+    }
+  } catch {
+    document.getElementById('sourcesBody').innerHTML = `<div class="empty-state"><div class="empty-icon">?</div>Could not load sources.json<br>Edit the file directly on GitHub.</div>`;
+  }
+
+  // Subscribers
+  try {
+    const res = await fetch('./data/subscribers.json');
+    const data = await res.json();
+    const body = document.getElementById('subscribersBody');
+    const count = document.getElementById('subCount');
+    const real = data.subscribers.filter(e => e && e !== 'your-email@example.com');
+    if (real.length > 0) {
+      count.textContent = `${real.length} subscriber${real.length > 1 ? 's' : ''}`;
+      body.innerHTML = real.map(e => `<div class="sub-item">${esc(e)}</div>`).join('');
+    } else {
+      count.textContent = '';
+      body.innerHTML = `<div class="empty-state"><div class="empty-icon">@</div>No subscribers yet.<br>Click "Edit on GitHub" to add your email.</div>`;
+    }
+  } catch {
+    document.getElementById('subscribersBody').innerHTML = `<div class="empty-state"><div class="empty-icon">?</div>Could not load subscribers.json<br>Edit the file directly on GitHub.</div>`;
+  }
+}
+
+loadConfig();
+
+// ── Accordion ───────────────────────────────────
+function toggleGuide(btn) {
+  const item = btn.closest('.guide-item');
+  const wasOpen = item.classList.contains('open');
+  // Close all
+  document.querySelectorAll('.guide-item').forEach(i => i.classList.remove('open'));
+  // Open clicked (if it was closed)
+  if (!wasOpen) item.classList.add('open');
+}
+
+// ── Scroll reveal ───────────────────────────────
+const observer = new IntersectionObserver((entries) => {
+  entries.forEach(e => { if (e.isIntersecting) e.target.classList.add('visible'); });
+}, { threshold: 0.1, rootMargin: '0px 0px -40px 0px' });
+document.querySelectorAll('.reveal').forEach(el => observer.observe(el));
+
+// ── Utility ─────────────────────────────────────
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s || '';
+  return d.innerHTML;
+}
+</script>
+</body>
+</html>
