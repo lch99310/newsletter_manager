@@ -272,6 +272,8 @@ function isJunkImage(url) {
   return false;
 }
 
+// ── 增強版 Generic HTML scraping strategy ──────────────────────
+
 async function scrapeGeneric(source) {
   const baseUrl = source.url;
   console.log('   Using generic HTML scraping strategy');
@@ -284,23 +286,40 @@ async function scrapeGeneric(source) {
 
   $('a').each((_, el) => {
     const $a = $(el);
-    if ($a.closest('nav, header, footer, [class*="nav"], [class*="menu"], [class*="footer"], [class*="subscribe"], [class*="sidebar"]').length) return;
+    // 排除導覽列、頁首、頁尾等非文章區塊
+    if ($a.closest('nav, header, footer, [class*="nav"], [class*="menu"], [class*="footer"], [class*="sidebar"]').length) return;
 
     const href = $a.attr('href') || '';
     const link = resolve(baseUrl, href);
     if (isJunkLink(link, baseUrl)) return;
     if (seen.has(link)) return;
 
+    // 1. 先嘗試抓取 <a> 裡面的文字
     let title = $a.text().trim().replace(/\s+/g, ' ');
+
+    // 2. 應對 LY's Note 這種卡片式排版：提取 aria-label 或 title 屬性
+    if (!title || /^(read more|post link to)/i.test(title)) {
+      const aria = $a.attr('aria-label') || $a.attr('title') || '';
+      title = aria.replace(/post link to/i, '').trim();
+    }
+
+    // 尋找文章卡片父容器
+    const parent = $a.closest('article, .post, .post-entry, div[class*="item"], div[class*="card"], li');
+
+    // 3. 如果還是抓不到標題，從卡片容器中找 <h1>~<h3>
+    if ((!title || isJunkTitle(title)) && parent.length) {
+      const heading = parent.find('h1, h2, h3, h4, .title').first().text().trim().replace(/\s+/g, ' ');
+      if (heading) title = heading;
+    }
+
     if (isJunkTitle(title)) return;
     if (seenTitles.has(title)) return;
 
     seen.add(link);
     seenTitles.add(title);
 
-    // Find summary
+    // 尋找文章摘要 (Summary)
     let summary = '';
-    const parent = $a.closest('div, li, section, article, [class*="item"], [class*="card"]');
     if (parent.length) {
       for (const sel of ['[class*="abstract"]', '[class*="summary"]', '[class*="excerpt"]', '[class*="desc"]']) {
         const c = parent.find(sel).first();
@@ -312,25 +331,26 @@ async function scrapeGeneric(source) {
           }
         }
       }
-      if (!summary) {
-        const p = parent.find('p').not($a.closest('p')).first();
-        if (p.length) {
-          const text = p.text().trim();
-          if (text && text !== title && text.length > 10) {
-            summary = text.length > 250 ? text.substring(0, 247) + '...' : text;
-          }
-        }
+    }
+
+    // 尋找文章日期 (Date) - 針對 LY's Note 中的 "25 December 2025" 結構優化
+    let date = '';
+    if (parent.length) {
+      const dateEl = parent.find('time, [class*="date"], [class*="time"], .meta').first();
+      if (dateEl.length) {
+        date = dateEl.text().trim().split('\n')[0].substring(0, 20).trim();
       }
     }
 
-    // Find image
+    // 尋找縮圖 (Image)
     let image = '';
     if (parent.length) {
       parent.find('img').each((_, imgEl) => {
         if (image) return;
         const $img = $(imgEl);
-        const src = resolve(baseUrl, $img.attr('src') || $img.attr('data-src') || $img.attr('data-original') || '');
+        const src = resolve(baseUrl, $img.attr('src') || $img.attr('data-src') || '');
         if (isJunkImage(src)) return;
+        // 排除過小的 icon
         const w = parseInt($img.attr('width') || '999');
         const h = parseInt($img.attr('height') || '999');
         if (w < 50 || h < 50) return;
@@ -338,12 +358,11 @@ async function scrapeGeneric(source) {
       });
     }
 
-    articles.push({ title, summary, image, link, date: '', hash: md5(title + '||' + link) });
+    articles.push({ title, summary, image, link, date, hash: md5(title + '||' + link) });
   });
 
   return articles;
 }
-
 // ── Strategy router ─────────────────────────────────────
 
 /**
