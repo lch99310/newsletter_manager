@@ -1,6 +1,19 @@
-# Newsletter Manager
+# 📬 Newsletter Manager
 
-Turn any website into email updates. No servers, no databases — just GitHub.
+**Turn any website into automated email updates. No servers, no databases — powered entirely by GitHub Actions.**
+
+---
+
+## 💡 The Problem: Great Content, No Way to Subscribe
+
+We’ve all been there: you find a high-quality technical blog, a niche industry news site, or a personal portfolio that publishes incredible insights. You want to stay updated, but:
+* **The "Subscribe" button is missing**: Many independent creators don't have a newsletter system or even an RSS feed.
+* **RSS is too clunky**: You don’t want to manage yet another app just to follow three or four specific sites.
+* **Manual checking is a chore**: Bookmarking a site and checking it every week is inefficient and leads to missed updates.
+
+**Newsletter Manager** was built to bridge this gap. It acts as your personal web-monitor, scraping your favorite sites and delivering new content directly to your inbox the moment it drops.
+
+---
 
 ## How It Works
 
