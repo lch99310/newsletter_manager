@@ -48,11 +48,11 @@ Edit `data/sources.json`:
 {
   "sources": [
     {
-      "url": "https://www.latepost.com/",
-      "name": "LatePost (晚点)"
+      "url": "https://example.com/",
+      "name": "Example web"
     },
     {
-      "url": "https://example.com/blog",
+      "url": "https://example2.com/blog",
       "name": "Example Blog"
     }
   ]
