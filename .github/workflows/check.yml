@@ -4,10 +4,19 @@ on:
   schedule:
     # Run daily at 08:00 UTC (adjust to your timezone)
     - cron: '0 8 * * *'
-  workflow_dispatch:  # Allow manual trigger from GitHub UI
+  workflow_dispatch:
+    inputs:
+      force_send:
+        description: 'Force send (ignore cache, resend all articles)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
 
 permissions:
-  contents: write  # Needed to commit cache updates
+  contents: write
 
 jobs:
   check:
@@ -28,6 +37,7 @@ jobs:
         env:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           FROM_EMAIL: ${{ secrets.FROM_EMAIL }}
+          FORCE_SEND: ${{ github.event.inputs.force_send || 'false' }}
         run: npm run check
 
       - name: Commit cache updates
