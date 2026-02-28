@@ -215,6 +215,144 @@ async function scrapeLatePost(source) {
   return articles;
 }
 
+// ── SciCover Summary 專用策略 ────────────────────────────
+
+async function scrapeSciCover(source) {
+  const baseUrl = source.url.replace(/\/$/, '').replace(/#.*$/, '');
+  console.log('   Using SciCover API strategy');
+  console.log(`   Base URL: ${baseUrl}`);
+
+  const articles = [];
+  const seenLinks = new Set();
+
+  // 策略 1: 嘗試獲取文章列表索引文件
+  const possibleIndexUrls = [
+    `${baseUrl}/data/articles.json`,
+    `${baseUrl}/data/index.json`,
+    `${baseUrl}/articles.json`,
+    `${baseUrl}/static/data/articles.json`,
+  ];
+
+  let articleList = null;
+
+  for (const indexUrl of possibleIndexUrls) {
+    try {
+      console.log(`   Trying index: ${indexUrl}`);
+      const { data } = await axios.get(indexUrl, { 
+        timeout: 15000, 
+        headers: BROWSER_HEADERS 
+      });
+      if (Array.isArray(data) && data.length > 0) {
+        articleList = data;
+        console.log(`   ✅ Found article list at: ${indexUrl} (${data.length} articles)`);
+        break;
+      }
+    } catch (err) {
+      console.log(`   ❌ ${indexUrl} not found`);
+    }
+  }
+
+  // 策略 2: 如果沒有索引文件，從 HTML 主頁提取文章鏈接
+  if (!articleList) {
+    console.log('   Falling back to HTML scraping...');
+    try {
+      const { data: html } = await axios.get(baseUrl, { 
+        timeout: 20000, 
+        headers: BROWSER_HEADERS 
+      });
+      
+      // 從 HTML 中提取所有 articles JSON 鏈接
+      const jsonLinkPattern = /data\/articles\/\d{4}\/\d{2}\/[^"'\s]+\.json/g;
+      const matches = html.match(jsonLinkPattern) || [];
+      
+      console.log(`   Found ${matches.length} article JSON links in HTML`);
+      
+      // 去重
+      const uniqueLinks = [...new Set(matches)];
+      
+      // 抓取每篇文章的 JSON 數據
+      for (const jsonPath of uniqueLinks) {
+        const fullUrl = `${baseUrl}/${jsonPath}`;
+        if (seenLinks.has(fullUrl)) continue;
+        seenLinks.add(fullUrl);
+
+        try {
+          const { data: articleData } = await axios.get(fullUrl, { 
+            timeout: 15000, 
+            headers: BROWSER_HEADERS 
+          });
+          
+          if (articleData) {
+            articles.push({
+              title: articleData.title || articleData.name || 'Untitled',
+              summary: (articleData.summary || articleData.description || articleData.abstract || '').substring(0, 250),
+              image: articleData.image || articleData.cover || articleData.thumbnail || '',
+              link: articleData.link || articleData.url || fullUrl.replace('.json', '.html') || fullUrl,
+              date: articleData.date || articleData.publishedAt || articleData.created_at || '',
+              hash: md5((articleData.title || '') + '||' + fullUrl),
+            });
+          }
+          
+          // 添加延遲，防止請求過快
+          await sleep(200);
+        } catch (err) {
+          console.log(`   ⚠️  Failed to fetch ${jsonPath}: ${err.message}`);
+        }
+      }
+    } catch (err) {
+      console.error(`   ❌ HTML scraping failed: ${err.message}`);
+    }
+  } 
+  // 策略 3: 如果有索引文件，抓取每篇文章詳情
+  else {
+    for (const item of articleList) {
+      const jsonPath = item.path || item.json_url || item.url;
+      let fullUrl = jsonPath;
+      
+      if (jsonPath && !jsonPath.startsWith('http')) {
+        fullUrl = `${baseUrl}/${jsonPath.replace(/^\//, '')}`;
+      } else if (jsonPath) {
+        fullUrl = jsonPath;
+      }
+
+      if (seenLinks.has(fullUrl)) continue;
+      seenLinks.add(fullUrl);
+
+      try {
+        const { data: articleData } = await axios.get(fullUrl, { 
+          timeout: 15000, 
+          headers: BROWSER_HEADERS 
+        });
+        
+        if (articleData) {
+          articles.push({
+            title: articleData.title || articleData.name || item.title || 'Untitled',
+            summary: (articleData.summary || articleData.description || articleData.abstract || item.summary || '').substring(0, 250),
+            image: articleData.image || articleData.cover || articleData.thumbnail || item.image || '',
+            link: articleData.link || articleData.url || item.link || fullUrl.replace('.json', '.html') || fullUrl,
+            date: articleData.date || articleData.publishedAt || articleData.created_at || item.date || '',
+            hash: md5((articleData.title || item.title || '') + '||' + fullUrl),
+          });
+        }
+        
+        await sleep(200);
+      } catch (err) {
+        console.log(`   ⚠️  Failed to fetch ${fullUrl}: ${err.message}`);
+      }
+    }
+  }
+
+  // 按日期排序（最新的在前）
+  articles.sort((a, b) => {
+    const dateA = new Date(a.date || 0);
+    const dateB = new Date(b.date || 0);
+    return dateB - dateA;
+  });
+
+  console.log(`   ✅ Processed ${articles.length} articles`);
+  return articles;
+}
+
 // ── Generic HTML scraping strategy ──────────────────────
 
 // Filtering rules for generic sites
@@ -373,11 +511,17 @@ async function fetchArticles(source) {
   const url = source.url;
   const strategy = source.strategy || 'auto';
 
+  // SciCover 策略
+  if (strategy === 'scicover' || url.includes('SciCover_Summary')) {
+    return scrapeSciCover(source);
+  }
+
+  // LatePost 策略
   if (strategy === 'latepost' || (strategy === 'auto' && url.includes('latepost.com'))) {
     return scrapeLatePost(source);
   }
 
-  // Default: generic HTML scraping
+  // 默認通用策略
   return scrapeGeneric(source);
 }
 
