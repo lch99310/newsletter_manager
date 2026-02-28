@@ -248,93 +248,103 @@ async function scrapeLatePost(source) {
   return articles;
 }
 
-// ── SciCover Summary strategy ───────────────────────────
-
+// ── SciCover Summary strategy (Updated to use JSON API) ───────────────────────────
 /**
- * SciCover Summary (lch99310.github.io/SciCover_Summary) strategy:
- * - This is a hash-based SPA (#/article/...) so generic scraping fails
- *   because JUNK_LINK_PATTERNS rejects all /#... links.
- * - We fetch the page HTML, parse the article cards directly via cheerio,
- *   and reconstruct the full hash URLs ourselves.
- */
+SciCover Summary strategy:
+Directly fetches data/index.json to get article list.
+This bypasses the SPA rendering issue.
+*/
 async function scrapeSciCover(source) {
   const baseUrl = source.url.replace(/\/$/, '');
-  console.log('   Using SciCover strategy');
+  const indexUrl = `${baseUrl}/data/index.json`;
+  console.log(`   Using SciCover JSON API: ${indexUrl}`);
 
-  const { data: html } = await axios.get(baseUrl, { timeout: 20000, headers: BROWSER_HEADERS });
-  const $ = cheerio.load(html);
-  const articles = [];
-  const seen = new Set();
-
-  // SciCover renders article cards as <a> elements with hash links
-  $('a[href*="#/article/"]').each((_, el) => {
-    const $a = $(el);
-    const href = $a.attr('href') || '';
-    // Reconstruct full URL: base + hash fragment
-    const link = href.startsWith('http') ? href : `${baseUrl}/${href.replace(/^\.?\/?/, '')}`;
-
-    if (seen.has(link)) return;
-    seen.add(link);
-
-    // Extract text content from the card
-    const fullText = $a.text().replace(/\s+/g, ' ').trim();
-
-    // Extract journal name and date from the card
-    // e.g., "Science February 25, 2026" or "Nature Feb 25, 2026"
-    let journal = '';
-    let date = '';
-    const dateMatch = fullText.match(/(Science|Nature|Cell)\s*((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+\d{1,2},?\s+\d{4})/i);
-    if (dateMatch) {
-      journal = dateMatch[1];
-      date = dateMatch[2];
+  try {
+    // 1. 獲取文章索引列表
+    const { data: indexData } = await axios.get(indexUrl, { timeout: 20000, headers: BROWSER_HEADERS });
+    
+    // 確保數據是陣列 (有些靜態網站生成器可能會包裹在對象中)
+    let list = Array.isArray(indexData) ? indexData : (indexData.routes || indexData.items || indexData.data || []);
+    
+    if (list.length === 0) {
+      console.log('   Warning: index.json returned empty list');
+      return [];
     }
 
-    // Extract the Chinese title (first bold line) and English title (second bold line)
-    let title = '';
-    let summary = '';
-    const boldTexts = [];
-    $a.find('strong, b').each((_, b) => {
-      const t = $(b).text().trim();
-      if (t) boldTexts.push(t);
-    });
+    console.log(`   Index found ${list.length} items`);
 
-    if (boldTexts.length >= 2) {
-      title = boldTexts[0];        // Chinese title
-      summary = boldTexts[1];      // English title as summary
-    } else if (boldTexts.length === 1) {
-      title = boldTexts[0];
-    } else {
-      // Fallback: strip known prefixes (journal + date) from full text
-      title = fullText
-        .replace(/(Science|Nature|Cell)/i, '')
-        .replace(/((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+\d{1,2},?\s+\d{4})/i, '')
-        .replace(/閱讀更多\s*→/g, '')
-        .trim();
-    }
+    const articles = [];
+    const seen = new Set();
+    const now = new Date();
+    const sevenDaysAgo = new Date(now.getTime() - 7 * 86400000);
 
-    if (!title || title.length < 4) return;
-
-    // Try to find an image in the card
-    let image = '';
-    $a.find('img').each((_, imgEl) => {
-      if (image) return;
-      const src = $(imgEl).attr('src') || $(imgEl).attr('data-src') || '';
-      if (src && !isJunkImage(src)) {
-        image = src.startsWith('http') ? src : resolve(baseUrl, src);
+    // 2. 遍歷列表並構建文章對象
+    for (const item of list) {
+      // 適應不同的 JSON 結構鍵名
+      const path = item.path || item.link || item.url || '';
+      const title = item.title || item.name || 'Untitled';
+      // 嘗試獲取日期，如果沒有則從路徑中解析
+      let dateStr = item.date || item.frontmatter?.date || item.publishDate || '';
+      
+      // 如果 JSON 裡沒有日期，嘗試從路徑解析 (例如 /data/articles/2026/02/science-2026-02-26.json)
+      if (!dateStr && path) {
+        const dateMatch = path.match(/(\d{4}-\d{2}-\d{2})/);
+        if (dateMatch) dateStr = dateMatch[1];
       }
+
+      // 過濾：只抓取最近 7 天的文章 (避免第一次運行發送歷史所有文章)
+      let articleDate = null;
+      if (dateStr) {
+        articleDate = new Date(dateStr);
+        if (articleDate < sevenDaysAgo) {
+          continue; 
+        }
+      }
+
+      // 構建閱讀連結 (SPA Hash 路由)
+      // 假設 JSON 路徑是 /data/articles/.../xxx.json
+      // 對應的網頁連結通常是 /#/article/.../xxx (去掉 .json 和 /data)
+      let link = path;
+      if (path.includes('/data/articles/')) {
+        const articleSlug = path.replace('/data/articles/', '').replace('.json', '');
+        link = `${baseUrl}/#/article/${articleSlug}`;
+      } else if (!path.startsWith('http')) {
+        link = `${baseUrl}${path}`;
+      }
+
+      if (seen.has(link)) continue;
+      seen.add(link);
+
+      // 構建縮圖連結 (如果有)
+      let image = item.image || item.cover || item.frontmatter?.image || '';
+      if (image && !image.startsWith('http')) {
+        image = `${baseUrl}${image}`;
+      }
+
+      articles.push({
+        title,
+        summary: item.summary || item.abstract || item.frontmatter?.summary || '',
+        image,
+        link,
+        date: dateStr,
+        hash: md5(title + '||' + link),
+      });
+    }
+
+    // 按日期排序 (最新的在前面)
+    articles.sort((a, b) => {
+      const da = a.date ? new Date(a.date).getTime() : 0;
+      const db = b.date ? new Date(b.date).getTime() : 0;
+      return db - da;
     });
 
-    articles.push({
-      title,
-      summary: summary.length > 250 ? summary.substring(0, 247) + '...' : summary,
-      image,
-      link,
-      date: date || journal,
-      hash: md5(title + '||' + link),
-    });
-  });
+    return articles;
 
-  return articles;
+  } catch (err) {
+    console.error(`   ❌ Failed to fetch index.json: ${err.message}`);
+    // 如果 JSON 抓取失敗，可選擇返回空或拋出錯誤
+    return [];
+  }
 }
 
 // ── Generic HTML scraping strategy ──────────────────────
