@@ -54,6 +54,39 @@ const BROWSER_HEADERS = {
   'Accept-Language': 'en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7',
 };
 
+// ── Rate limiting helper ────────────────────────────────
+
+/**
+ * Sleep for the given number of milliseconds.
+ */
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Send an email via Resend with exponential backoff on 429 rate limit errors.
+ * Resend allows 2 req/s, so we space requests by at least 600ms and retry on 429.
+ */
+async function sendWithRetry(resendClient, emailOptions, maxRetries = 4) {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const result = await resendClient.emails.send(emailOptions);
+      return result;
+    } catch (err) {
+      const status = err?.statusCode || err?.response?.status || err?.status;
+      const isRateLimit = status === 429 || (err.message && err.message.includes('rate limit'));
+
+      if (isRateLimit && attempt < maxRetries) {
+        const delay = Math.pow(2, attempt) * 1000; // 1s, 2s, 4s, 8s
+        console.log(`   ⏳ Rate limited. Retrying in ${delay / 1000}s (attempt ${attempt + 1}/${maxRetries})...`);
+        await sleep(delay);
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
 // ── Date helpers ────────────────────────────────────────
 
 /**
@@ -215,6 +248,95 @@ async function scrapeLatePost(source) {
   return articles;
 }
 
+// ── SciCover Summary strategy ───────────────────────────
+
+/**
+ * SciCover Summary (lch99310.github.io/SciCover_Summary) strategy:
+ * - This is a hash-based SPA (#/article/...) so generic scraping fails
+ *   because JUNK_LINK_PATTERNS rejects all /#... links.
+ * - We fetch the page HTML, parse the article cards directly via cheerio,
+ *   and reconstruct the full hash URLs ourselves.
+ */
+async function scrapeSciCover(source) {
+  const baseUrl = source.url.replace(/\/$/, '');
+  console.log('   Using SciCover strategy');
+
+  const { data: html } = await axios.get(baseUrl, { timeout: 20000, headers: BROWSER_HEADERS });
+  const $ = cheerio.load(html);
+  const articles = [];
+  const seen = new Set();
+
+  // SciCover renders article cards as <a> elements with hash links
+  $('a[href*="#/article/"]').each((_, el) => {
+    const $a = $(el);
+    const href = $a.attr('href') || '';
+    // Reconstruct full URL: base + hash fragment
+    const link = href.startsWith('http') ? href : `${baseUrl}/${href.replace(/^\.?\/?/, '')}`;
+
+    if (seen.has(link)) return;
+    seen.add(link);
+
+    // Extract text content from the card
+    const fullText = $a.text().replace(/\s+/g, ' ').trim();
+
+    // Extract journal name and date from the card
+    // e.g., "Science February 25, 2026" or "Nature Feb 25, 2026"
+    let journal = '';
+    let date = '';
+    const dateMatch = fullText.match(/(Science|Nature|Cell)\s*((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+\d{1,2},?\s+\d{4})/i);
+    if (dateMatch) {
+      journal = dateMatch[1];
+      date = dateMatch[2];
+    }
+
+    // Extract the Chinese title (first bold line) and English title (second bold line)
+    let title = '';
+    let summary = '';
+    const boldTexts = [];
+    $a.find('strong, b').each((_, b) => {
+      const t = $(b).text().trim();
+      if (t) boldTexts.push(t);
+    });
+
+    if (boldTexts.length >= 2) {
+      title = boldTexts[0];        // Chinese title
+      summary = boldTexts[1];      // English title as summary
+    } else if (boldTexts.length === 1) {
+      title = boldTexts[0];
+    } else {
+      // Fallback: strip known prefixes (journal + date) from full text
+      title = fullText
+        .replace(/(Science|Nature|Cell)/i, '')
+        .replace(/((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+\d{1,2},?\s+\d{4})/i, '')
+        .replace(/閱讀更多\s*→/g, '')
+        .trim();
+    }
+
+    if (!title || title.length < 4) return;
+
+    // Try to find an image in the card
+    let image = '';
+    $a.find('img').each((_, imgEl) => {
+      if (image) return;
+      const src = $(imgEl).attr('src') || $(imgEl).attr('data-src') || '';
+      if (src && !isJunkImage(src)) {
+        image = src.startsWith('http') ? src : resolve(baseUrl, src);
+      }
+    });
+
+    articles.push({
+      title,
+      summary: summary.length > 250 ? summary.substring(0, 247) + '...' : summary,
+      image,
+      link,
+      date: date || journal,
+      hash: md5(title + '||' + link),
+    });
+  });
+
+  return articles;
+}
+
 // ── Generic HTML scraping strategy ──────────────────────
 
 // Filtering rules for generic sites
@@ -228,8 +350,8 @@ const JUNK_LINK_PATTERNS = [
 ];
 
 const JUNK_TITLE_PATTERNS = [
-  /^(about|contact|关于|加入|广告|联系|login|signup|home|首页)/i,
-  /^(more|查看更多|加载更多|订阅|subscribe|read more)/i,
+  /^(about|contact|關於|加入|廣告|聯繫|login|signup|home|首頁)/i,
+  /^(more|查看更多|加載更多|訂閱|subscribe|read more)/i,
   /^(skip to|跳到|↓|↑|←|→)/i,
   /^(portfolio|blog|posts|tags|categories|archive)$/i,
   /^(menu|search|close|open|toggle)$/i,
@@ -363,11 +485,13 @@ async function scrapeGeneric(source) {
 
   return articles;
 }
+
 // ── Strategy router ─────────────────────────────────────
 
 /**
  * Determine which scraping strategy to use based on the source URL.
- * Users can add "strategy": "latepost" in sources.json, or it auto-detects by domain.
+ * Users can add "strategy": "latepost" or "scicover" in sources.json,
+ * or it auto-detects by domain.
  */
 async function fetchArticles(source) {
   const url = source.url;
@@ -375,6 +499,10 @@ async function fetchArticles(source) {
 
   if (strategy === 'latepost' || (strategy === 'auto' && url.includes('latepost.com'))) {
     return scrapeLatePost(source);
+  }
+
+  if (strategy === 'scicover' || (strategy === 'auto' && url.includes('SciCover_Summary'))) {
+    return scrapeSciCover(source);
   }
 
   // Default: generic HTML scraping
@@ -496,10 +624,14 @@ async function main() {
 
     console.log(`\n   📤 Sending to ${validSubscribers.length} subscriber(s)...`);
 
-    for (const email of validSubscribers) {
+    for (let i = 0; i < validSubscribers.length; i++) {
+      const email = validSubscribers[i];
       try {
+        // Respect Resend rate limit: 2 req/s → wait 600ms between sends
+        if (i > 0) await sleep(600);
+
         console.log(`   → Sending to ${email}...`);
-        const result = await resend.emails.send({
+        const result = await sendWithRetry(resend, {
           from: `Newsletter Manager <${FROM_EMAIL}>`,
           to: email,
           subject,
