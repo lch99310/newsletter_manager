@@ -35,6 +35,32 @@ const resend = RESEND_API_KEY ? new Resend(RESEND_API_KEY) : null;
 
 // ── Helpers ─────────────────────────────────────────────
 
+// 睡眠函數 - 用於控制請求頻率
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// 帶重試機制的批量發送函數
+async function sendBatchWithRetry(resend, emails, maxRetries = 3) {
+  let attempts = 0;
+  while (attempts < maxRetries) {
+    try {
+      const data = await resend.batch.send({ emails });
+      console.log('✅ Batch send successful');
+      return data;
+    } catch (error) {
+      attempts++;
+      if (error.statusCode === 429 || error.name === 'RateLimitError') {
+        const waitTime = Math.pow(2, attempts) * 1000;
+        console.warn(`⚠️  Rate limit hit during batch send. Retrying in ${waitTime}ms (Attempt ${attempts}/${maxRetries})...`);
+        await sleep(waitTime);
+      } else {
+        console.error('❌ Non-retryable error during batch send:', error.message);
+        throw error;
+      }
+    }
+  }
+  throw new Error('Max retries reached for batch sending');
+}
+
 function md5(str) {
   return crypto.createHash('md5').update(str).digest('hex');
 }
@@ -56,10 +82,6 @@ const BROWSER_HEADERS = {
 
 // ── Date helpers ────────────────────────────────────────
 
-/**
- * Parse Chinese date like "02月14日 16:02" or "02月14日" into a Date object.
- * Assumes current year if not specified.
- */
 function parseChineseDate(str) {
   if (!str) return null;
   const m = str.match(/(\d{1,2})月(\d{1,2})日/);
@@ -68,7 +90,6 @@ function parseChineseDate(str) {
   const day = parseInt(m[2]);
   const now = new Date();
   const year = now.getFullYear();
-  // Handle year boundary: if parsed month is far ahead of current month, it's probably last year
   let d = new Date(year, month, day);
   if (d > new Date(now.getTime() + 7 * 86400000)) {
     d = new Date(year - 1, month, day);
@@ -76,146 +97,15 @@ function parseChineseDate(str) {
   return d;
 }
 
-/**
- * Check if a date is within the last N days.
- */
 function isRecent(date, days = 7) {
-  if (!date) return true; // if no date available, include it
+  if (!date) return true;
   const cutoff = new Date(Date.now() - days * 86400000);
   return date >= cutoff;
 }
 
 // ══════════════════════════════════════════════════════════
-// ── SITE-SPECIFIC STRATEGIES ────────────────────────────
-// ══════════════════════════════════════════════════════════
-
-/**
- * LatePost (latepost.com) strategy:
- * - Uses their internal API (POST /site/index) to get article list with structured data
- * - Then fetches each article's detail page for exact date and cover image
- * - Filters to only include articles from the last 3 days
- */
-async function scrapeLatePost(source) {
-  const baseUrl = 'https://www.latepost.com';
-  console.log('   Using LatePost API strategy');
-
-  // Step 1: Get article list from API
-  const { data: apiResp } = await axios.post(`${baseUrl}/site/index`,
-    'page=1&limit=15',
-    {
-      timeout: 20000,
-      headers: {
-        ...BROWSER_HEADERS,
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'X-Requested-With': 'XMLHttpRequest',
-        'Referer': `${baseUrl}/`,
-      }
-    }
-  );
-
-  if (!apiResp || apiResp.code !== 1 || !Array.isArray(apiResp.data)) {
-    throw new Error(`LatePost API returned unexpected response: ${JSON.stringify(apiResp).substring(0, 200)}`);
-  }
-
-  console.log(`   API returned ${apiResp.data.length} articles`);
-
-  // Step 2: Also get the featured headline from homepage HTML
-  let headlineArticle = null;
-  try {
-    const { data: homeHtml } = await axios.get(`${baseUrl}/`, { timeout: 20000, headers: BROWSER_HEADERS });
-    const $ = cheerio.load(homeHtml);
-    const headlineLink = $('.headlines-title a').first();
-    if (headlineLink.length) {
-      const href = headlineLink.attr('href') || '';
-      const title = headlineLink.text().trim();
-      const abstract = $('.headlines-abstract').first().text().trim();
-      if (title && href) {
-        headlineArticle = {
-          title,
-          abstract,
-          detail_url: href,
-        };
-      }
-    }
-  } catch (err) {
-    console.log(`   Warning: could not fetch homepage headline: ${err.message}`);
-  }
-
-  // Step 3: Merge headline with API articles (headline first, dedup)
-  const allRaw = [];
-  const seenIds = new Set();
-
-  if (headlineArticle) {
-    allRaw.push(headlineArticle);
-    const idMatch = headlineArticle.detail_url.match(/id=(\d+)/);
-    if (idMatch) seenIds.add(idMatch[1]);
-  }
-
-  for (const item of apiResp.data) {
-    if (seenIds.has(item.id)) continue;
-    seenIds.add(item.id);
-    allRaw.push(item);
-  }
-
-  // Step 4: For each article, fetch detail page to get exact date and cover image
-  const articles = [];
-  for (const item of allRaw) {
-    const detailUrl = resolve(baseUrl, item.detail_url);
-    if (!detailUrl) continue;
-
-    let title = item.title || '';
-    let date = item.release_time || '';
-    let cover = item.cover ? resolve(baseUrl, item.cover) : '';
-    let summary = item.abstract || '';
-
-    // Fetch detail page for better date and cover image
-    try {
-      const { data: detailHtml } = await axios.get(detailUrl, { timeout: 15000, headers: BROWSER_HEADERS });
-      const $d = cheerio.load(detailHtml);
-
-      // Get precise title from detail page
-      const detailTitle = $d('.article-header-title').text().trim();
-      if (detailTitle) title = detailTitle;
-
-      // Get precise date from detail page (e.g., "02月14日 16:02")
-      const detailDate = $d('.article-header-date').text().trim();
-      if (detailDate) date = detailDate;
-
-      // Get cover image from detail page
-      if (!cover) {
-        $d('img[src*="cover"]').each((_, el) => {
-          if (cover) return;
-          const src = $d(el).attr('src') || '';
-          if (src.includes('cover')) cover = resolve(baseUrl, src);
-        });
-      }
-    } catch (err) {
-      console.log(`   Warning: could not fetch detail for "${title.substring(0, 30)}": ${err.message}`);
-    }
-
-    if (!title) continue;
-
-    // Parse date and check recency (only last 7 days)
-    const parsedDate = parseChineseDate(date);
-    if (parsedDate && !isRecent(parsedDate, 7)) {
-      console.log(`   Skipped (old: ${date}): ${title.substring(0, 40)}`);
-      continue;
-    }
-
-    articles.push({
-      title,
-      summary: summary.length > 250 ? summary.substring(0, 247) + '...' : summary,
-      image: cover,
-      link: detailUrl,
-      date,
-      hash: md5(title + '||' + detailUrl),
-    });
-  }
-
-  return articles;
-}
-
 // ── SciCover Summary 專用策略 ────────────────────────────
+// ══════════════════════════════════════════════════════════
 
 async function scrapeSciCover(source) {
   const baseUrl = source.url.replace(/\/$/, '').replace(/#.*$/, '');
@@ -293,7 +183,6 @@ async function scrapeSciCover(source) {
             });
           }
           
-          // 添加延遲，防止請求過快
           await sleep(200);
         } catch (err) {
           console.log(`   ⚠️  Failed to fetch ${jsonPath}: ${err.message}`);
@@ -353,9 +242,124 @@ async function scrapeSciCover(source) {
   return articles;
 }
 
-// ── Generic HTML scraping strategy ──────────────────────
+// ══════════════════════════════════════════════════════════
+// ── LatePost 專用策略 ────────────────────────────────────
+// ══════════════════════════════════════════════════════════
 
-// Filtering rules for generic sites
+async function scrapeLatePost(source) {
+  const baseUrl = 'https://www.latepost.com';
+  console.log('   Using LatePost API strategy');
+
+  const { data: apiResp } = await axios.post(`${baseUrl}/site/index`,
+    'page=1&limit=15',
+    {
+      timeout: 20000,
+      headers: {
+        ...BROWSER_HEADERS,
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'X-Requested-With': 'XMLHttpRequest',
+        'Referer': `${baseUrl}/`,
+      }
+    }
+  );
+
+  if (!apiResp || apiResp.code !== 1 || !Array.isArray(apiResp.data)) {
+    throw new Error(`LatePost API returned unexpected response: ${JSON.stringify(apiResp).substring(0, 200)}`);
+  }
+
+  console.log(`   API returned ${apiResp.data.length} articles`);
+
+  let headlineArticle = null;
+  try {
+    const { data: homeHtml } = await axios.get(`${baseUrl}/`, { timeout: 20000, headers: BROWSER_HEADERS });
+    const $ = cheerio.load(homeHtml);
+    const headlineLink = $('.headlines-title a').first();
+    if (headlineLink.length) {
+      const href = headlineLink.attr('href') || '';
+      const title = headlineLink.text().trim();
+      const abstract = $('.headlines-abstract').first().text().trim();
+      if (title && href) {
+        headlineArticle = { title, abstract, detail_url: href };
+      }
+    }
+  } catch (err) {
+    console.log(`   Warning: could not fetch homepage headline: ${err.message}`);
+  }
+
+  const allRaw = [];
+  const seenIds = new Set();
+
+  if (headlineArticle) {
+    allRaw.push(headlineArticle);
+    const idMatch = headlineArticle.detail_url.match(/id=(\d+)/);
+    if (idMatch) seenIds.add(idMatch[1]);
+  }
+
+  for (const item of apiResp.data) {
+    if (seenIds.has(item.id)) continue;
+    seenIds.add(item.id);
+    allRaw.push(item);
+  }
+
+  const articles = [];
+  for (const item of allRaw) {
+    const detailUrl = resolve(baseUrl, item.detail_url);
+    if (!detailUrl) continue;
+
+    let title = item.title || '';
+    let date = item.release_time || '';
+    let cover = item.cover ? resolve(baseUrl, item.cover) : '';
+    let summary = item.abstract || '';
+
+    try {
+      const { data: detailHtml } = await axios.get(detailUrl, { timeout: 15000, headers: BROWSER_HEADERS });
+      const $d = cheerio.load(detailHtml);
+
+      const detailTitle = $d('.article-header-title').text().trim();
+      if (detailTitle) title = detailTitle;
+
+      const detailDate = $d('.article-header-date').text().trim();
+      if (detailDate) date = detailDate;
+
+      if (!cover) {
+        $d('img[src*="cover"]').each((_, el) => {
+          if (cover) return;
+          const src = $d(el).attr('src') || '';
+          if (src.includes('cover')) cover = resolve(baseUrl, src);
+        });
+      }
+    } catch (err) {
+      console.log(`   Warning: could not fetch detail for "${title.substring(0, 30)}": ${err.message}`);
+    }
+
+    if (!title) continue;
+
+    const parsedDate = parseChineseDate(date);
+    if (parsedDate && !isRecent(parsedDate, 7)) {
+      console.log(`   Skipped (old: ${date}): ${title.substring(0, 40)}`);
+      continue;
+    }
+
+    articles.push({
+      title,
+      summary: summary.length > 250 ? summary.substring(0, 247) + '...' : summary,
+      image: cover,
+      link: detailUrl,
+      date,
+      hash: md5(title + '||' + detailUrl),
+    });
+
+    // 爬蟲延遲：防止被目標網站封鎖 IP
+    await sleep(300);
+  }
+
+  return articles;
+}
+
+// ══════════════════════════════════════════════════════════
+// ── Generic HTML scraping strategy ───────────────────────
+// ══════════════════════════════════════════════════════════
+
 const JUNK_LINK_PATTERNS = [
   /\/(about|contact|join|login|signup|register|privacy|terms|careers|faq|help|sitemap)\b/i,
   /\/(websites|tags?|label|category|search|archive|page)\//i,
@@ -410,8 +414,6 @@ function isJunkImage(url) {
   return false;
 }
 
-// ── 增強版 Generic HTML scraping strategy ──────────────────────
-
 async function scrapeGeneric(source) {
   const baseUrl = source.url;
   console.log('   Using generic HTML scraping strategy');
@@ -424,7 +426,6 @@ async function scrapeGeneric(source) {
 
   $('a').each((_, el) => {
     const $a = $(el);
-    // 排除導覽列、頁首、頁尾等非文章區塊
     if ($a.closest('nav, header, footer, [class*="nav"], [class*="menu"], [class*="footer"], [class*="sidebar"]').length) return;
 
     const href = $a.attr('href') || '';
@@ -432,19 +433,15 @@ async function scrapeGeneric(source) {
     if (isJunkLink(link, baseUrl)) return;
     if (seen.has(link)) return;
 
-    // 1. 先嘗試抓取 <a> 裡面的文字
     let title = $a.text().trim().replace(/\s+/g, ' ');
 
-    // 2. 應對 LY's Note 這種卡片式排版：提取 aria-label 或 title 屬性
     if (!title || /^(read more|post link to)/i.test(title)) {
       const aria = $a.attr('aria-label') || $a.attr('title') || '';
       title = aria.replace(/post link to/i, '').trim();
     }
 
-    // 尋找文章卡片父容器
     const parent = $a.closest('article, .post, .post-entry, div[class*="item"], div[class*="card"], li');
 
-    // 3. 如果還是抓不到標題，從卡片容器中找 <h1>~<h3>
     if ((!title || isJunkTitle(title)) && parent.length) {
       const heading = parent.find('h1, h2, h3, h4, .title').first().text().trim().replace(/\s+/g, ' ');
       if (heading) title = heading;
@@ -456,7 +453,6 @@ async function scrapeGeneric(source) {
     seen.add(link);
     seenTitles.add(title);
 
-    // 尋找文章摘要 (Summary)
     let summary = '';
     if (parent.length) {
       for (const sel of ['[class*="abstract"]', '[class*="summary"]', '[class*="excerpt"]', '[class*="desc"]']) {
@@ -471,7 +467,6 @@ async function scrapeGeneric(source) {
       }
     }
 
-    // 尋找文章日期 (Date) - 針對 LY's Note 中的 "25 December 2025" 結構優化
     let date = '';
     if (parent.length) {
       const dateEl = parent.find('time, [class*="date"], [class*="time"], .meta').first();
@@ -480,7 +475,6 @@ async function scrapeGeneric(source) {
       }
     }
 
-    // 尋找縮圖 (Image)
     let image = '';
     if (parent.length) {
       parent.find('img').each((_, imgEl) => {
@@ -488,7 +482,6 @@ async function scrapeGeneric(source) {
         const $img = $(imgEl);
         const src = resolve(baseUrl, $img.attr('src') || $img.attr('data-src') || '');
         if (isJunkImage(src)) return;
-        // 排除過小的 icon
         const w = parseInt($img.attr('width') || '999');
         const h = parseInt($img.attr('height') || '999');
         if (w < 50 || h < 50) return;
@@ -501,12 +494,11 @@ async function scrapeGeneric(source) {
 
   return articles;
 }
-// ── Strategy router ─────────────────────────────────────
 
-/**
- * Determine which scraping strategy to use based on the source URL.
- * Users can add "strategy": "latepost" in sources.json, or it auto-detects by domain.
- */
+// ══════════════════════════════════════════════════════════
+// ── Strategy router ───────────────────────────────────────
+// ══════════════════════════════════════════════════════════
+
 async function fetchArticles(source) {
   const url = source.url;
   const strategy = source.strategy || 'auto';
@@ -525,7 +517,9 @@ async function fetchArticles(source) {
   return scrapeGeneric(source);
 }
 
-// ── Email template ──────────────────────────────────────
+// ══════════════════════════════════════════════════════════
+// ── Email template ────────────────────────────────────────
+// ══════════════════════════════════════════════════════════
 
 function buildEmailHtml(sourceName, sourceUrl, date, articles) {
   const rows = articles.map(a => {
@@ -568,7 +562,9 @@ function buildEmailHtml(sourceName, sourceUrl, date, articles) {
 </td></tr></table></body></html>`;
 }
 
-// ── Main ────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════
+// ── Main ──────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════
 
 async function main() {
   const today = new Date().toISOString().split('T')[0];
@@ -603,7 +599,6 @@ async function main() {
       continue;
     }
 
-    // Check which articles are new
     const sourceKey = md5(source.url);
     const prevHashes = cache[sourceKey] || [];
     const prevSet = new Set(prevHashes);
@@ -636,42 +631,41 @@ async function main() {
 
     const subject = `${source.name} ${today} Updates (${newArticles.length} new)`;
     const emailHtml = buildEmailHtml(source.name, source.url, today, newArticles);
-    let anyEmailSucceeded = false;
+    
+    console.log(`\n   📤 Sending batch to ${validSubscribers.length} subscriber(s)...`);
 
-    console.log(`\n   📤 Sending to ${validSubscribers.length} subscriber(s)...`);
+    // 構建批量發送 payload
+    const batchEmails = validSubscribers.map(email => ({
+      from: `Newsletter Manager <${FROM_EMAIL}>`,
+      to: email,
+      subject,
+      html: emailHtml,
+    }));
 
-    for (const email of validSubscribers) {
-      try {
-        console.log(`   → Sending to ${email}...`);
-        const result = await resend.emails.send({
-          from: `Newsletter Manager <${FROM_EMAIL}>`,
-          to: email,
-          subject,
-          html: emailHtml,
+    try {
+      // 使用帶重試的批量發送函數
+      const result = await sendBatchWithRetry(resend, batchEmails);
+      
+      // 處理批量發送結果
+      if (result.data) {
+        result.data.forEach((item, index) => {
+          if (item.error) {
+            console.error(`   ❌ Failed to send to ${validSubscribers[index]}: ${item.error.message}`);
+          } else {
+            console.log(`   ✉️  Sent to ${validSubscribers[index]} (id: ${item.id})`);
+            totalEmailsSent++;
+          }
         });
-
-        if (result.error) {
-          console.error(`   ❌ Resend error for ${email}: ${JSON.stringify(result.error)}`);
-        } else {
-          console.log(`   ✉️  Sent to ${email} (id: ${result.data?.id || 'unknown'})`);
-          anyEmailSucceeded = true;
-          totalEmailsSent++;
-        }
-      } catch (err) {
-        console.error(`   ❌ Exception sending to ${email}: ${err.message}`);
-        if (err.response) {
-          console.error(`   Response: ${JSON.stringify(err.response)}`);
-        }
       }
+    } catch (err) {
+      console.error(`   ❌ Batch send failed completely: ${err.message}`);
+      cache[sourceKey] = articles.map(a => a.hash);
+      cacheUpdated = true;
+      continue; 
     }
 
     cache[sourceKey] = articles.map(a => a.hash);
     cacheUpdated = true;
-
-    if (!anyEmailSucceeded) {
-      console.log('   ⚠️  No emails were delivered. Check your Resend API key and FROM_EMAIL.');
-      console.log('   💡 Tip: With onboarding@resend.dev, you can only send to your Resend account email.');
-    }
   }
 
   // Save cache
