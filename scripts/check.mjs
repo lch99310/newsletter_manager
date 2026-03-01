@@ -248,9 +248,9 @@ async function scrapeLatePost(source) {
   return articles;
 }
 
-// ── SciCover Summary strategy (Updated to use JSON API) ───────────────────────────
+// ── SciCover Summary strategy ───────────────────────────
 /**
-SciCover Summary strategy:
+SciCover Summary (lch99310.github.io/SciCover_Summary) strategy:
 Directly fetches data/index.json to get article list.
 This bypasses the SPA rendering issue.
 */
@@ -261,10 +261,10 @@ async function scrapeSciCover(source) {
 
   try {
     // 1. 獲取文章索引列表
-    const { data: indexData } = await axios.get(indexUrl, { timeout: 20000, headers: BROWSER_HEADERS });
+    const {  indexData } = await axios.get(indexUrl, { timeout: 20000, headers: BROWSER_HEADERS });
     
-    // 確保數據是陣列 (有些靜態網站生成器可能會包裹在對象中)
-    let list = Array.isArray(indexData) ? indexData : (indexData.routes || indexData.items || indexData.data || []);
+    // 確保數據結構正確 (根據您提供的 JSON 結構)
+    const list = indexData.articles || [];
     
     if (list.length === 0) {
       console.log('   Warning: index.json returned empty list');
@@ -280,50 +280,46 @@ async function scrapeSciCover(source) {
 
     // 2. 遍歷列表並構建文章對象
     for (const item of list) {
-      // 適應不同的 JSON 結構鍵名
-      const path = item.path || item.link || item.url || '';
-      const title = item.title || item.name || 'Untitled';
-      // 嘗試獲取日期，如果沒有則從路徑中解析
-      let dateStr = item.date || item.frontmatter?.date || item.publishDate || '';
+      const path = item.path || '';
+      const title = item.title_zh || item.title_en || 'Untitled';
+      const summary = item.title_en || ''; // 將英文標題作為摘要
+      const dateStr = item.date || '';
       
-      // 如果 JSON 裡沒有日期，嘗試從路徑解析 (例如 /data/articles/2026/02/science-2026-02-26.json)
-      if (!dateStr && path) {
-        const dateMatch = path.match(/(\d{4}-\d{2}-\d{2})/);
-        if (dateMatch) dateStr = dateMatch[1];
-      }
-
       // 過濾：只抓取最近 7 天的文章 (避免第一次運行發送歷史所有文章)
+      // 注意：如果您的系統時間不是 2026 年，這裡可能需要調整或暫時關閉
       let articleDate = null;
       if (dateStr) {
         articleDate = new Date(dateStr);
+        // 如果日期是未來時間，或者在 7 天內，都視為有效
+        // 如果系統時間是 2024 而文章是 2026，這條件會通過 (因為 2026 > 2024-7days)
         if (articleDate < sevenDaysAgo) {
           continue; 
         }
       }
 
       // 構建閱讀連結 (SPA Hash 路由)
-      // 假設 JSON 路徑是 /data/articles/.../xxx.json
-      // 對應的網頁連結通常是 /#/article/.../xxx (去掉 .json 和 /data)
-      let link = path;
-      if (path.includes('/data/articles/')) {
-        const articleSlug = path.replace('/data/articles/', '').replace('.json', '');
-        link = `${baseUrl}/#/article/${articleSlug}`;
-      } else if (!path.startsWith('http')) {
-        link = `${baseUrl}${path}`;
+      // JSON path: articles/2026/02/science-2026-02-26.json
+      // Web link:  /#/article/articles/2026/02/science-2026-02-26
+      let link = '';
+      if (path) {
+        const slug = path.replace('.json', '');
+        link = `${baseUrl}/#/article/${slug}`;
+      } else {
+        link = baseUrl;
       }
 
       if (seen.has(link)) continue;
       seen.add(link);
 
-      // 構建縮圖連結 (如果有)
-      let image = item.image || item.cover || item.frontmatter?.image || '';
+      // 構建縮圖連結 (處理相對路徑)
+      let image = item.cover_url || '';
       if (image && !image.startsWith('http')) {
-        image = `${baseUrl}${image}`;
+        image = resolve(baseUrl, image);
       }
 
       articles.push({
         title,
-        summary: item.summary || item.abstract || item.frontmatter?.summary || '',
+        summary: summary.length > 250 ? summary.substring(0, 247) + '...' : summary,
         image,
         link,
         date: dateStr,
@@ -342,7 +338,6 @@ async function scrapeSciCover(source) {
 
   } catch (err) {
     console.error(`   ❌ Failed to fetch index.json: ${err.message}`);
-    // 如果 JSON 抓取失敗，可選擇返回空或拋出錯誤
     return [];
   }
 }
