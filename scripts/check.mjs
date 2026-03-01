@@ -260,13 +260,28 @@ async function scrapeSciCover(source) {
   console.log(`   Using SciCover JSON API: ${indexUrl}`);
 
   try {
-    const response = await axios.get(indexUrl, { timeout: 20000, headers: BROWSER_HEADERS });
+    // 1. 獲取文章索引列表
+    const response = await axios.get(indexUrl, { 
+      timeout: 20000, 
+      headers: BROWSER_HEADERS,
+      responseType: 'json'  // ✅ 確保返回 JSON
+    });
+    
+    // 2. 正確獲取數據
     const indexData = response.data;
     
-    const list = indexData.articles || [];
+    // 3. 調試日誌：查看原始數據結構
+    console.log('   Response status:', response.status);
+    console.log('   indexData type:', typeof indexData);
+    console.log('   indexData keys:', Object.keys(indexData || {}));
+    console.log('   articles length:', Array.isArray(indexData?.articles) ? indexData.articles.length : 'N/A');
+    
+    // 4. 確保數據結構正確
+    const list = Array.isArray(indexData?.articles) ? indexData.articles : [];
     
     if (list.length === 0) {
       console.log('   Warning: index.json returned empty list');
+      console.log('   Raw data preview:', JSON.stringify(indexData).substring(0, 300));
       return [];
     }
 
@@ -277,6 +292,7 @@ async function scrapeSciCover(source) {
     const now = new Date();
     const sevenDaysAgo = new Date(now.getTime() - 7 * 86400000);
 
+    // 5. 遍歷列表並構建文章對象
     for (const item of list) {
       // ✅ 使用 id 字段構建連結（而不是 path）
       const articleId = item.id || '';
@@ -332,6 +348,10 @@ async function scrapeSciCover(source) {
 
   } catch (err) {
     console.error(`   ❌ Failed to fetch index.json: ${err.message}`);
+    if (err.response) {
+      console.error('   Response status:', err.response.status);
+      console.error('   Response data:', err.response.data?.toString().substring(0, 200));
+    }
     return [];
   }
 }
