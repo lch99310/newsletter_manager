@@ -260,13 +260,9 @@ async function scrapeSciCover(source) {
   console.log(`   Using SciCover JSON API: ${indexUrl}`);
 
   try {
-    // 1. 獲取文章索引列表
     const response = await axios.get(indexUrl, { timeout: 20000, headers: BROWSER_HEADERS });
-    const indexData = response.data;  // ✅ 正確：從 response.data 獲取
+    const indexData = response.data;
     
-    console.log('   Raw indexData:', JSON.stringify(indexData).substring(0, 200) + '...');
-    
-    // 確保數據結構正確 (根據您提供的 JSON 結構)
     const list = indexData.articles || [];
     
     if (list.length === 0) {
@@ -281,9 +277,9 @@ async function scrapeSciCover(source) {
     const now = new Date();
     const sevenDaysAgo = new Date(now.getTime() - 7 * 86400000);
 
-    // 2. 遍歷列表並構建文章對象
     for (const item of list) {
-      const path = item.path || '';
+      // ✅ 使用 id 字段構建連結（而不是 path）
+      const articleId = item.id || '';
       const title = item.title_zh || item.title_en || 'Untitled';
       const summary = item.title_en || '';
       const dateStr = item.date || '';
@@ -298,11 +294,10 @@ async function scrapeSciCover(source) {
         }
       }
 
-      // 構建閱讀連結 (SPA Hash 路由)
+      // ✅ 正確構建連結：/#/article/{id}
       let link = '';
-      if (path) {
-        const slug = path.replace('.json', '');
-        link = `${baseUrl}/#/article/${slug}`;
+      if (articleId) {
+        link = `${baseUrl}/#/article/${articleId}`;
       } else {
         link = baseUrl;
       }
@@ -310,7 +305,7 @@ async function scrapeSciCover(source) {
       if (seen.has(link)) continue;
       seen.add(link);
 
-      // 構建縮圖連結 (處理相對路徑)
+      // 構建縮圖連結
       let image = item.cover_url || '';
       if (image && !image.startsWith('http')) {
         image = resolve(baseUrl, image);
@@ -326,7 +321,7 @@ async function scrapeSciCover(source) {
       });
     }
 
-    // 按日期排序 (最新的在前面)
+    // 按日期排序
     articles.sort((a, b) => {
       const da = a.date ? new Date(a.date).getTime() : 0;
       const db = b.date ? new Date(b.date).getTime() : 0;
