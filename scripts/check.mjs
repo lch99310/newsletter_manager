@@ -248,6 +248,7 @@ async function scrapeLatePost(source) {
   return articles;
 }
 
+
 // ── SciCover Summary strategy ───────────────────────────
 /**
 SciCover Summary (lch99310.github.io/SciCover_Summary) strategy:
@@ -260,28 +261,26 @@ async function scrapeSciCover(source) {
   console.log(`   Using SciCover JSON API: ${indexUrl}`);
 
   try {
-    // 1. 獲取文章索引列表
     const response = await axios.get(indexUrl, { 
       timeout: 20000, 
       headers: BROWSER_HEADERS,
-      responseType: 'json'  // ✅ 確保返回 JSON
+      responseType: 'json'
     });
     
-    // 2. 正確獲取數據
     const indexData = response.data;
     
-    // 3. 調試日誌：查看原始數據結構
+    // 調試日誌
     console.log('   Response status:', response.status);
-    console.log('   indexData type:', typeof indexData);
     console.log('   indexData keys:', Object.keys(indexData || {}));
-    console.log('   articles length:', Array.isArray(indexData?.articles) ? indexData.articles.length : 'N/A');
     
-    // 4. 確保數據結構正確
-    const list = Array.isArray(indexData?.articles) ? indexData.articles : [];
+    // ✅ 適應實際的 JSON 結構：entries 而不是 articles
+    const list = Array.isArray(indexData?.entries) ? indexData.entries : 
+                 Array.isArray(indexData?.articles) ? indexData.articles : [];
+    
+    console.log('   entries length:', list.length);
     
     if (list.length === 0) {
       console.log('   Warning: index.json returned empty list');
-      console.log('   Raw data preview:', JSON.stringify(indexData).substring(0, 300));
       return [];
     }
 
@@ -292,22 +291,25 @@ async function scrapeSciCover(source) {
     const now = new Date();
     const sevenDaysAgo = new Date(now.getTime() - 7 * 86400000);
 
-    // 5. 遍歷列表並構建文章對象
     for (const item of list) {
-      // ✅ 使用 id 字段構建連結（而不是 path）
       const articleId = item.id || '';
-      const title = item.title_zh || item.title_en || 'Untitled';
-      const summary = item.title_en || '';
+      const title = item.title || item.title_zh || item.title_en || 'Untitled';
+      const summary = item.title_en || item.abstract || '';
       const dateStr = item.date || '';
       
-      // 過濾：只抓取最近 7 天的文章
+      // ✅ 日期過濾優化：如果 date 為空，不過濾（直接包含）
+      // 因為很多文章沒有日期，但可能是新更新的
       let articleDate = null;
       if (dateStr) {
         articleDate = new Date(dateStr);
-        if (articleDate < sevenDaysAgo) {
+        // 只有當日期有效且早於 7 天前才跳過
+        if (!isNaN(articleDate.getTime()) && articleDate < sevenDaysAgo) {
           console.log(`   Skipped (old: ${dateStr}): ${title.substring(0, 40)}`);
           continue; 
         }
+      } else {
+        // date 為空時，記錄但不跳過
+        console.log(`   No date for: ${title.substring(0, 40)}... (including anyway)`);
       }
 
       // ✅ 正確構建連結：/#/article/{id}
@@ -321,8 +323,8 @@ async function scrapeSciCover(source) {
       if (seen.has(link)) continue;
       seen.add(link);
 
-      // 構建縮圖連結
-      let image = item.cover_url || '';
+      // ✅ 處理 cover_image_local 字段
+      let image = item.cover_url || item.cover_image_local || item.image || '';
       if (image && !image.startsWith('http')) {
         image = resolve(baseUrl, image);
       }
@@ -332,15 +334,17 @@ async function scrapeSciCover(source) {
         summary: summary.length > 250 ? summary.substring(0, 247) + '...' : summary,
         image,
         link,
-        date: dateStr,
+        date: dateStr || 'New',
         hash: md5(title + '||' + link),
       });
     }
 
-    // 按日期排序
+    // 按日期排序（有日期的在前，沒日期的在後）
     articles.sort((a, b) => {
-      const da = a.date ? new Date(a.date).getTime() : 0;
-      const db = b.date ? new Date(b.date).getTime() : 0;
+      if (!a.date || a.date === 'New') return 1;
+      if (!b.date || b.date === 'New') return -1;
+      const da = new Date(a.date).getTime();
+      const db = new Date(b.date).getTime();
       return db - da;
     });
 
@@ -350,12 +354,10 @@ async function scrapeSciCover(source) {
     console.error(`   ❌ Failed to fetch index.json: ${err.message}`);
     if (err.response) {
       console.error('   Response status:', err.response.status);
-      console.error('   Response data:', err.response.data?.toString().substring(0, 200));
     }
     return [];
   }
 }
-
 
 // ── Generic HTML scraping strategy ──────────────────────
 
