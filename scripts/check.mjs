@@ -261,7 +261,10 @@ async function scrapeSciCover(source) {
 
   try {
     // 1. 獲取文章索引列表
-    const {  indexData } = await axios.get(indexUrl, { timeout: 20000, headers: BROWSER_HEADERS });
+    const response = await axios.get(indexUrl, { timeout: 20000, headers: BROWSER_HEADERS });
+    const indexData = response.data;  // ✅ 正確：從 response.data 獲取
+    
+    console.log('   Raw indexData:', JSON.stringify(indexData).substring(0, 200) + '...');
     
     // 確保數據結構正確 (根據您提供的 JSON 結構)
     const list = indexData.articles || [];
@@ -282,24 +285,20 @@ async function scrapeSciCover(source) {
     for (const item of list) {
       const path = item.path || '';
       const title = item.title_zh || item.title_en || 'Untitled';
-      const summary = item.title_en || ''; // 將英文標題作為摘要
+      const summary = item.title_en || '';
       const dateStr = item.date || '';
       
-      // 過濾：只抓取最近 7 天的文章 (避免第一次運行發送歷史所有文章)
-      // 注意：如果您的系統時間不是 2026 年，這裡可能需要調整或暫時關閉
+      // 過濾：只抓取最近 7 天的文章
       let articleDate = null;
       if (dateStr) {
         articleDate = new Date(dateStr);
-        // 如果日期是未來時間，或者在 7 天內，都視為有效
-        // 如果系統時間是 2024 而文章是 2026，這條件會通過 (因為 2026 > 2024-7days)
         if (articleDate < sevenDaysAgo) {
+          console.log(`   Skipped (old: ${dateStr}): ${title.substring(0, 40)}`);
           continue; 
         }
       }
 
       // 構建閱讀連結 (SPA Hash 路由)
-      // JSON path: articles/2026/02/science-2026-02-26.json
-      // Web link:  /#/article/articles/2026/02/science-2026-02-26
       let link = '';
       if (path) {
         const slug = path.replace('.json', '');
@@ -341,6 +340,7 @@ async function scrapeSciCover(source) {
     return [];
   }
 }
+
 
 // ── Generic HTML scraping strategy ──────────────────────
 
