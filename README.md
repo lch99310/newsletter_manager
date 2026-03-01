@@ -145,3 +145,7 @@ Remove your email from `data/subscribers.json`, or disable the workflow in the A
 
 **Q: The Action failed, what do I check?**
 Go to Actions tab → click the failed run → check the logs. Common issues: missing secrets, invalid API key, or the website blocking requests.
+
+---
+
+[![License: CC BY-NC-ND 4.0](https://img.shields.io/badge/License-CC%20BY--NC--ND%204.0-lightgrey.svg)](https://creativecommons.org)
