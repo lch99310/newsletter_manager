@@ -248,7 +248,6 @@ async function scrapeLatePost(source) {
   return articles;
 }
 
-
 // ── SciCover Summary strategy ───────────────────────────
 /**
 SciCover Summary (lch99310.github.io/SciCover_Summary) strategy:
@@ -261,6 +260,7 @@ async function scrapeSciCover(source) {
   console.log(`   Using SciCover JSON API: ${indexUrl}`);
 
   try {
+    // 1. 獲取文章索引列表
     const response = await axios.get(indexUrl, { 
       timeout: 20000, 
       headers: BROWSER_HEADERS,
@@ -269,15 +269,9 @@ async function scrapeSciCover(source) {
     
     const indexData = response.data;
     
-    // 調試日誌
-    console.log('   Response status:', response.status);
-    console.log('   indexData keys:', Object.keys(indexData || {}));
-    
-    // ✅ 適應實際的 JSON 結構：entries 而不是 articles
+    // 適應實際的 JSON 結構：entries 而不是 articles
     const list = Array.isArray(indexData?.entries) ? indexData.entries : 
                  Array.isArray(indexData?.articles) ? indexData.articles : [];
-    
-    console.log('   entries length:', list.length);
     
     if (list.length === 0) {
       console.log('   Warning: index.json returned empty list');
@@ -291,14 +285,14 @@ async function scrapeSciCover(source) {
     const now = new Date();
     const sevenDaysAgo = new Date(now.getTime() - 7 * 86400000);
 
+    // 2. 遍歷列表並構建文章對象
     for (const item of list) {
       const articleId = item.id || '';
       const title = item.title || item.title_zh || item.title_en || 'Untitled';
       const summary = item.title_en || item.abstract || '';
       const dateStr = item.date || '';
       
-      // ✅ 日期過濾優化：如果 date 為空，不過濾（直接包含）
-      // 因為很多文章沒有日期，但可能是新更新的
+      // 日期過濾優化：如果 date 為空，不過濾（直接包含）
       let articleDate = null;
       if (dateStr) {
         articleDate = new Date(dateStr);
@@ -307,9 +301,6 @@ async function scrapeSciCover(source) {
           console.log(`   Skipped (old: ${dateStr}): ${title.substring(0, 40)}`);
           continue; 
         }
-      } else {
-        // date 為空時，記錄但不跳過
-        console.log(`   No date for: ${title.substring(0, 40)}... (including anyway)`);
       }
 
       // ✅ 正確構建連結：/#/article/{id}
@@ -323,23 +314,24 @@ async function scrapeSciCover(source) {
       if (seen.has(link)) continue;
       seen.add(link);
 
-      // ✅ 處理 cover_image_local 字段
+      // ✅ 正確處理圖片：將相對路徑轉換為絕對路徑
       let image = item.cover_url || item.cover_image_local || item.image || '';
       if (image && !image.startsWith('http')) {
+        // 使用 resolve 函數將相對路徑 (如 images/nature-.jpg) 轉為絕對路徑
         image = resolve(baseUrl, image);
       }
 
       articles.push({
         title,
         summary: summary.length > 250 ? summary.substring(0, 247) + '...' : summary,
-        image,
+        image, // 這裡現在應該是完整的 https://... 連結
         link,
         date: dateStr || 'New',
         hash: md5(title + '||' + link),
       });
     }
 
-    // 按日期排序（有日期的在前，沒日期的在後）
+    // 按日期排序
     articles.sort((a, b) => {
       if (!a.date || a.date === 'New') return 1;
       if (!b.date || b.date === 'New') return -1;
