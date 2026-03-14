@@ -48,28 +48,93 @@ function esc(s) {
   return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+// ══════════════════════════════════════════════════════════
+// ── FIX #3: Enhanced browser headers with anti-detection ─
+// ══════════════════════════════════════════════════════════
+
 const BROWSER_HEADERS = {
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-  'Accept-Language': 'en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7',
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+  'Accept-Language': 'en-US,en;q=0.9,zh-TW;q=0.8,zh;q=0.7',
+  'Accept-Encoding': 'gzip, deflate, br',
+  'Cache-Control': 'no-cache',
+  'Pragma': 'no-cache',
+  'Sec-Ch-Ua': '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+  'Sec-Ch-Ua-Mobile': '?0',
+  'Sec-Ch-Ua-Platform': '"Windows"',
+  'Sec-Fetch-Dest': 'document',
+  'Sec-Fetch-Mode': 'navigate',
+  'Sec-Fetch-Site': 'none',
+  'Sec-Fetch-User': '?1',
+  'Upgrade-Insecure-Requests': '1',
 };
 
 // ── Rate limiting helper ────────────────────────────────
 
-/**
- * Sleep for the given number of milliseconds.
- */
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-/**
- * Send an email via Resend with exponential backoff on 429 rate limit errors.
- * Resend allows 2 req/s, so we space requests by at least 600ms and retry on 429.
- */
-async function sendWithRetry(resendClient, emailOptions, maxRetries = 4) {
+// ══════════════════════════════════════════════════════════
+// ── FIX #3: Robust HTTP fetch with retry on transient errors
+// ══════════════════════════════════════════════════════════
+
+async function fetchWithRetry(url, options = {}, maxRetries = 3) {
+  const mergedOptions = {
+    timeout: 20000,
+    headers: { ...BROWSER_HEADERS, ...options.headers },
+    ...options,
+    headers: { ...BROWSER_HEADERS, ...options.headers },
+  };
+
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
+      const response = await axios(url, mergedOptions);
+      return response;
+    } catch (err) {
+      const status = err?.response?.status;
+      const isRetryable = !status || status >= 500 || status === 429 || status === 403;
+
+      if (isRetryable && attempt < maxRetries) {
+        const delay = Math.pow(2, attempt) * 1000 + Math.random() * 500;
+        console.log(`   ⏳ Request failed (${status || err.code || 'network error'}), retrying in ${(delay / 1000).toFixed(1)}s (attempt ${attempt + 1}/${maxRetries})...`);
+        await sleep(delay);
+
+        // On 403, rotate User-Agent for next attempt
+        if (status === 403) {
+          const agents = [
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0',
+          ];
+          mergedOptions.headers['User-Agent'] = agents[attempt % agents.length];
+          // Add Referer to look more like a real browser
+          mergedOptions.headers['Referer'] = new URL(url).origin + '/';
+        }
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
+// ══════════════════════════════════════════════════════════
+// ── FIX #4: Global email rate limiter ────────────────────
+// ══════════════════════════════════════════════════════════
+
+let lastEmailSentAt = 0;
+
+async function sendWithRetry(resendClient, emailOptions, maxRetries = 4) {
+  // Global rate limit: ensure at least 1200ms between ANY two emails
+  const now = Date.now();
+  const elapsed = now - lastEmailSentAt;
+  if (elapsed < 1200) {
+    await sleep(1200 - elapsed);
+  }
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      lastEmailSentAt = Date.now();
       const result = await resendClient.emails.send(emailOptions);
       return result;
     } catch (err) {
@@ -77,7 +142,7 @@ async function sendWithRetry(resendClient, emailOptions, maxRetries = 4) {
       const isRateLimit = status === 429 || (err.message && err.message.includes('rate limit'));
 
       if (isRateLimit && attempt < maxRetries) {
-        const delay = Math.pow(2, attempt) * 1000; // 1s, 2s, 4s, 8s
+        const delay = Math.pow(2, attempt + 1) * 1000; // 2s, 4s, 8s, 16s
         console.log(`   ⏳ Rate limited. Retrying in ${delay / 1000}s (attempt ${attempt + 1}/${maxRetries})...`);
         await sleep(delay);
         continue;
@@ -89,10 +154,6 @@ async function sendWithRetry(resendClient, emailOptions, maxRetries = 4) {
 
 // ── Date helpers ────────────────────────────────────────
 
-/**
- * Parse Chinese date like "02月14日 16:02" or "02月14日" into a Date object.
- * Assumes current year if not specified.
- */
 function parseChineseDate(str) {
   if (!str) return null;
   const m = str.match(/(\d{1,2})月(\d{1,2})日/);
@@ -101,7 +162,6 @@ function parseChineseDate(str) {
   const day = parseInt(m[2]);
   const now = new Date();
   const year = now.getFullYear();
-  // Handle year boundary: if parsed month is far ahead of current month, it's probably last year
   let d = new Date(year, month, day);
   if (d > new Date(now.getTime() + 7 * 86400000)) {
     d = new Date(year - 1, month, day);
@@ -109,42 +169,163 @@ function parseChineseDate(str) {
   return d;
 }
 
-/**
- * Check if a date is within the last N days.
- */
 function isRecent(date, days = 7) {
-  if (!date) return true; // if no date available, include it
+  if (!date) return true;
   const cutoff = new Date(Date.now() - days * 86400000);
   return date >= cutoff;
+}
+
+// ══════════════════════════════════════════════════════════
+// ── FIX #2: Image URL validation ─────────────────────────
+// ══════════════════════════════════════════════════════════
+
+function isValidImageUrl(url) {
+  if (!url) return false;
+  try {
+    const parsed = new URL(url);
+    if (!['http:', 'https:'].includes(parsed.protocol)) return false;
+    // Must have a reasonable path (not just domain root)
+    if (parsed.pathname === '/' || parsed.pathname === '') return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// ══════════════════════════════════════════════════════════
+// ── FIX #7: Universal metadata extraction ────────────────
+// ══════════════════════════════════════════════════════════
+
+/**
+ * Extract article metadata from a detail page using multiple strategies:
+ * 1. Open Graph meta tags (og:title, og:description, og:image)
+ * 2. Twitter Card meta tags
+ * 3. JSON-LD structured data
+ * 4. Standard meta description
+ * 5. First visible paragraph
+ *
+ * This provides a unified, reliable way to get summaries and images
+ * regardless of the site's HTML structure.
+ */
+function extractPageMetadata($, url) {
+  const meta = { title: '', summary: '', image: '' };
+
+  // 1. Open Graph
+  meta.title = $('meta[property="og:title"]').attr('content') || '';
+  meta.summary = $('meta[property="og:description"]').attr('content') || '';
+  meta.image = $('meta[property="og:image"]').attr('content') || '';
+
+  // 2. Twitter Card fallback
+  if (!meta.summary) meta.summary = $('meta[name="twitter:description"]').attr('content') || '';
+  if (!meta.image) meta.image = $('meta[name="twitter:image"]').attr('content') || '';
+  if (!meta.title) meta.title = $('meta[name="twitter:title"]').attr('content') || '';
+
+  // 3. Standard meta description fallback
+  if (!meta.summary) meta.summary = $('meta[name="description"]').attr('content') || '';
+
+  // 4. JSON-LD structured data
+  $('script[type="application/ld+json"]').each((_, el) => {
+    try {
+      const ld = JSON.parse($(el).html());
+      const items = Array.isArray(ld) ? ld : [ld];
+      for (const item of items) {
+        if (item['@type'] === 'Article' || item['@type'] === 'BlogPosting' || item['@type'] === 'NewsArticle') {
+          if (!meta.title && item.headline) meta.title = item.headline;
+          if (!meta.summary && item.description) meta.summary = item.description;
+          if (!meta.image && item.image) {
+            meta.image = typeof item.image === 'string' ? item.image : (item.image?.url || '');
+          }
+        }
+      }
+    } catch { /* ignore malformed JSON-LD */ }
+  });
+
+  // Resolve relative URLs
+  if (meta.image && !meta.image.startsWith('http')) {
+    meta.image = resolve(url, meta.image);
+  }
+
+  // Trim summary
+  if (meta.summary && meta.summary.length > 250) {
+    meta.summary = meta.summary.substring(0, 247) + '...';
+  }
+
+  return meta;
+}
+
+// ══════════════════════════════════════════════════════════
+// ── FIX #5 & #7: Enhanced summary extraction from article page
+// ══════════════════════════════════════════════════════════
+
+/**
+ * Fetch an article's detail page and extract summary + image
+ * using the universal metadata approach (OG, meta, JSON-LD).
+ * Falls back to first paragraph extraction.
+ */
+async function enrichArticle(article, baseUrl) {
+  if (article.summary && article.image) return article;
+
+  try {
+    const resp = await fetchWithRetry(article.link, {
+      timeout: 12000,
+      headers: { ...BROWSER_HEADERS, 'Referer': baseUrl },
+    }, 1); // Only 1 retry for enrichment
+
+    const $ = cheerio.load(resp.data);
+    const meta = extractPageMetadata($, article.link);
+
+    // Fill in missing summary
+    if (!article.summary && meta.summary) {
+      article.summary = meta.summary;
+    }
+
+    // If still no summary, try first meaningful paragraph from article body
+    if (!article.summary) {
+      const bodySelectors = ['article', '.post-content', '.entry-content', '.article-body', '.content', 'main'];
+      for (const sel of bodySelectors) {
+        const container = $(sel).first();
+        if (!container.length) continue;
+        const paragraphs = container.find('p');
+        for (let i = 0; i < Math.min(paragraphs.length, 5); i++) {
+          const text = $(paragraphs[i]).text().trim();
+          if (text.length > 30) {
+            article.summary = text.length > 250 ? text.substring(0, 247) + '...' : text;
+            break;
+          }
+        }
+        if (article.summary) break;
+      }
+    }
+
+    // Fill in missing image
+    if (!article.image && meta.image && isValidImageUrl(meta.image)) {
+      article.image = meta.image;
+    }
+  } catch (err) {
+    console.log(`   ⚠️  Could not enrich "${article.title.substring(0, 30)}": ${err.message}`);
+  }
+
+  return article;
 }
 
 // ══════════════════════════════════════════════════════════
 // ── SITE-SPECIFIC STRATEGIES ────────────────────────────
 // ══════════════════════════════════════════════════════════
 
-/**
- * LatePost (latepost.com) strategy:
- * - Uses their internal API (POST /site/index) to get article list with structured data
- * - Then fetches each article's detail page for exact date and cover image
- * - Filters to only include articles from the last 3 days
- */
 async function scrapeLatePost(source) {
   const baseUrl = 'https://www.latepost.com';
   console.log('   Using LatePost API strategy');
 
-  // Step 1: Get article list from API
-  const { data: apiResp } = await axios.post(`${baseUrl}/site/index`,
-    'page=1&limit=15',
-    {
-      timeout: 20000,
-      headers: {
-        ...BROWSER_HEADERS,
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'X-Requested-With': 'XMLHttpRequest',
-        'Referer': `${baseUrl}/`,
-      }
-    }
-  );
+  const { data: apiResp } = await fetchWithRetry(`${baseUrl}/site/index`, {
+    method: 'POST',
+    data: 'page=1&limit=15',
+    headers: {
+      ...BROWSER_HEADERS,
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'X-Requested-With': 'XMLHttpRequest',
+      'Referer': `${baseUrl}/`,
+    },
+  });
 
   if (!apiResp || apiResp.code !== 1 || !Array.isArray(apiResp.data)) {
     throw new Error(`LatePost API returned unexpected response: ${JSON.stringify(apiResp).substring(0, 200)}`);
@@ -152,10 +333,12 @@ async function scrapeLatePost(source) {
 
   console.log(`   API returned ${apiResp.data.length} articles`);
 
-  // Step 2: Also get the featured headline from homepage HTML
+  // Also get the featured headline from homepage HTML
   let headlineArticle = null;
   try {
-    const { data: homeHtml } = await axios.get(`${baseUrl}/`, { timeout: 20000, headers: BROWSER_HEADERS });
+    const { data: homeHtml } = await fetchWithRetry(`${baseUrl}/`, {
+      headers: { ...BROWSER_HEADERS, 'Referer': `${baseUrl}/` },
+    });
     const $ = cheerio.load(homeHtml);
     const headlineLink = $('.headlines-title a').first();
     if (headlineLink.length) {
@@ -163,18 +346,14 @@ async function scrapeLatePost(source) {
       const title = headlineLink.text().trim();
       const abstract = $('.headlines-abstract').first().text().trim();
       if (title && href) {
-        headlineArticle = {
-          title,
-          abstract,
-          detail_url: href,
-        };
+        headlineArticle = { title, abstract, detail_url: href };
       }
     }
   } catch (err) {
     console.log(`   Warning: could not fetch homepage headline: ${err.message}`);
   }
 
-  // Step 3: Merge headline with API articles (headline first, dedup)
+  // Merge headline with API articles
   const allRaw = [];
   const seenIds = new Set();
 
@@ -190,7 +369,6 @@ async function scrapeLatePost(source) {
     allRaw.push(item);
   }
 
-  // Step 4: For each article, fetch detail page to get exact date and cover image
   const articles = [];
   for (const item of allRaw) {
     const detailUrl = resolve(baseUrl, item.detail_url);
@@ -203,24 +381,35 @@ async function scrapeLatePost(source) {
 
     // Fetch detail page for better date and cover image
     try {
-      const { data: detailHtml } = await axios.get(detailUrl, { timeout: 15000, headers: BROWSER_HEADERS });
+      const { data: detailHtml } = await fetchWithRetry(detailUrl, {
+        timeout: 15000,
+        headers: { ...BROWSER_HEADERS, 'Referer': `${baseUrl}/` },
+      }, 1);
       const $d = cheerio.load(detailHtml);
 
-      // Get precise title from detail page
       const detailTitle = $d('.article-header-title').text().trim();
       if (detailTitle) title = detailTitle;
 
-      // Get precise date from detail page (e.g., "02月14日 16:02")
       const detailDate = $d('.article-header-date').text().trim();
       if (detailDate) date = detailDate;
 
-      // Get cover image from detail page
       if (!cover) {
-        $d('img[src*="cover"]').each((_, el) => {
-          if (cover) return;
-          const src = $d(el).attr('src') || '';
-          if (src.includes('cover')) cover = resolve(baseUrl, src);
-        });
+        // Try OG image first
+        const ogImg = $d('meta[property="og:image"]').attr('content');
+        if (ogImg) {
+          cover = resolve(baseUrl, ogImg);
+        } else {
+          $d('img[src*="cover"]').each((_, el) => {
+            if (cover) return;
+            const src = $d(el).attr('src') || '';
+            if (src.includes('cover')) cover = resolve(baseUrl, src);
+          });
+        }
+      }
+
+      // Enhance summary from OG if empty
+      if (!summary) {
+        summary = $d('meta[property="og:description"]').attr('content') || '';
       }
     } catch (err) {
       console.log(`   Warning: could not fetch detail for "${title.substring(0, 30)}": ${err.message}`);
@@ -228,7 +417,6 @@ async function scrapeLatePost(source) {
 
     if (!title) continue;
 
-    // Parse date and check recency (only last 7 days)
     const parsedDate = parseChineseDate(date);
     if (parsedDate && !isRecent(parsedDate, 7)) {
       console.log(`   Skipped (old: ${date}): ${title.substring(0, 40)}`);
@@ -238,7 +426,7 @@ async function scrapeLatePost(source) {
     articles.push({
       title,
       summary: summary.length > 250 ? summary.substring(0, 247) + '...' : summary,
-      image: cover,
+      image: isValidImageUrl(cover) ? cover : '',
       link: detailUrl,
       date,
       hash: md5(title + '||' + detailUrl),
@@ -248,33 +436,44 @@ async function scrapeLatePost(source) {
   return articles;
 }
 
-// ── SciCover Summary strategy ───────────────────────────
-/**
-SciCover Summary (lch99310.github.io/SciCover_Summary) strategy:
-Directly fetches data/index.json to get article list.
-This bypasses the SPA rendering issue.
-*/
+// ══════════════════════════════════════════════════════════
+// ── FIX #1: SciCover Summary strategy ───────────────────
+// ══════════════════════════════════════════════════════════
+
 async function scrapeSciCover(source) {
   const baseUrl = source.url.replace(/\/$/, '');
   const indexUrl = `${baseUrl}/data/index.json`;
   console.log(`   Using SciCover JSON API: ${indexUrl}`);
 
   try {
-    // 1. 獲取文章索引列表
-    const response = await axios.get(indexUrl, { 
-      timeout: 20000, 
-      headers: BROWSER_HEADERS,
-      responseType: 'json'
+    const response = await fetchWithRetry(indexUrl, {
+      headers: {
+        ...BROWSER_HEADERS,
+        'Accept': 'application/json,text/html,*/*;q=0.8',
+        'Referer': `${baseUrl}/`,
+      },
+      responseType: 'json',
     });
-    
+
     const indexData = response.data;
-    
-    // 適應實際的 JSON 結構：entries 而不是 articles
-    const list = Array.isArray(indexData?.entries) ? indexData.entries : 
-                 Array.isArray(indexData?.articles) ? indexData.articles : [];
-    
+
+    // Handle various possible JSON structures
+    let list = [];
+    if (Array.isArray(indexData)) {
+      list = indexData;
+    } else if (Array.isArray(indexData?.entries)) {
+      list = indexData.entries;
+    } else if (Array.isArray(indexData?.articles)) {
+      list = indexData.articles;
+    } else if (Array.isArray(indexData?.data)) {
+      list = indexData.data;
+    } else if (Array.isArray(indexData?.items)) {
+      list = indexData.items;
+    }
+
     if (list.length === 0) {
       console.log('   Warning: index.json returned empty list');
+      console.log('   Response keys:', Object.keys(indexData || {}));
       return [];
     }
 
@@ -283,27 +482,38 @@ async function scrapeSciCover(source) {
     const articles = [];
     const seen = new Set();
     const now = new Date();
-    const sevenDaysAgo = new Date(now.getTime() - 7 * 86400000);
+    // FIX #1: Extend to 30 days (SciCover may update infrequently)
+    const cutoffDays = 30;
+    const cutoffDate = new Date(now.getTime() - cutoffDays * 86400000);
 
-    // 2. 遍歷列表並構建文章對象
     for (const item of list) {
       const articleId = item.id || '';
       const title = item.title || item.title_zh || item.title_en || 'Untitled';
-      const summary = item.title_en || item.abstract || '';
-      const dateStr = item.date || '';
-      
-      // 日期過濾優化：如果 date 為空，不過濾（直接包含）
-      let articleDate = null;
-      if (dateStr) {
-        articleDate = new Date(dateStr);
-        // 只有當日期有效且早於 7 天前才跳過
-        if (!isNaN(articleDate.getTime()) && articleDate < sevenDaysAgo) {
-          console.log(`   Skipped (old: ${dateStr}): ${title.substring(0, 40)}`);
-          continue; 
+      if (title === 'Untitled') continue;
+
+      // FIX #5: Better summary extraction - try multiple fields
+      let summary = '';
+      for (const field of ['summary', 'abstract', 'description', 'title_en', 'subtitle']) {
+        const val = item[field];
+        if (val && typeof val === 'string' && val.length > 5 && val !== title) {
+          summary = val;
+          break;
         }
       }
 
-      // ✅ 正確構建連結：/#/article/{id}
+      const dateStr = item.date || item.published || item.created || '';
+
+      // FIX #1: Use 30-day cutoff instead of 7 days
+      let articleDate = null;
+      if (dateStr) {
+        articleDate = new Date(dateStr);
+        if (!isNaN(articleDate.getTime()) && articleDate < cutoffDate) {
+          console.log(`   Skipped (old: ${dateStr}): ${title.substring(0, 40)}`);
+          continue;
+        }
+      }
+      // If no date at all, always include (don't filter)
+
       let link = '';
       if (articleId) {
         link = `${baseUrl}/#/article/${articleId}`;
@@ -314,24 +524,28 @@ async function scrapeSciCover(source) {
       if (seen.has(link)) continue;
       seen.add(link);
 
-      // ✅ 正確處理圖片：將相對路徑轉換為絕對路徑
-      let image = item.cover_url || item.cover_image_local || item.image || '';
-      if (image && !image.startsWith('http')) {
-        // 使用 resolve 函數將相對路徑 (如 images/nature-.jpg) 轉為絕對路徑
-        image = resolve(baseUrl, image);
+      // FIX #2: Better image resolution with validation
+      let image = '';
+      for (const field of ['cover_url', 'cover_image', 'cover_image_local', 'image', 'thumbnail']) {
+        const val = item[field];
+        if (val && typeof val === 'string') {
+          image = val.startsWith('http') ? val : resolve(`${baseUrl}/data/`, val);
+          if (isValidImageUrl(image)) break;
+          image = '';
+        }
       }
 
       articles.push({
         title,
         summary: summary.length > 250 ? summary.substring(0, 247) + '...' : summary,
-        image, // 這裡現在應該是完整的 https://... 連結
+        image,
         link,
         date: dateStr || 'New',
-        hash: md5(title + '||' + link),
+        hash: md5(articleId || title), // FIX #1: Use ID for stable hash when available
       });
     }
 
-    // 按日期排序
+    // Sort by date, newest first
     articles.sort((a, b) => {
       if (!a.date || a.date === 'New') return 1;
       if (!b.date || b.date === 'New') return -1;
@@ -346,12 +560,15 @@ async function scrapeSciCover(source) {
     console.error(`   ❌ Failed to fetch index.json: ${err.message}`);
     if (err.response) {
       console.error('   Response status:', err.response.status);
+      console.error('   Response headers:', JSON.stringify(err.response.headers || {}).substring(0, 200));
     }
     return [];
   }
 }
 
-// ── Generic HTML scraping strategy ──────────────────────
+// ══════════════════════════════════════════════════════════
+// ── FIX #7: Enhanced generic HTML scraping strategy ──────
+// ══════════════════════════════════════════════════════════
 
 // Filtering rules for generic sites
 const JUNK_LINK_PATTERNS = [
@@ -408,21 +625,49 @@ function isJunkImage(url) {
   return false;
 }
 
-// ── 增強版 Generic HTML scraping strategy ──────────────────────
-
+/**
+ * FIX #7: Universal generic scraper with enhanced strategies:
+ * 1. Try RSS/Atom feed first (most reliable structured data)
+ * 2. Extract page-level OG metadata for context
+ * 3. Parse article links from HTML
+ * 4. Enrich each article with detail page metadata (OG/meta/JSON-LD)
+ */
 async function scrapeGeneric(source) {
   const baseUrl = source.url;
-  console.log('   Using generic HTML scraping strategy');
+  console.log('   Using enhanced generic scraping strategy');
 
-  const { data: html } = await axios.get(baseUrl, { timeout: 20000, headers: BROWSER_HEADERS });
-  const $ = cheerio.load(html);
+  // Step 1: Try RSS/Atom feed first
+  const rssArticles = await tryRssFeed(baseUrl);
+  if (rssArticles.length > 0) {
+    console.log(`   ✅ Found RSS/Atom feed with ${rssArticles.length} articles`);
+    return rssArticles;
+  }
+
+  // Step 2: Fall back to HTML scraping
+  const resp = await fetchWithRetry(baseUrl, {
+    headers: { ...BROWSER_HEADERS, 'Referer': new URL(baseUrl).origin + '/' },
+  });
+  const $ = cheerio.load(resp.data);
+
+  // Check for RSS link in HTML head
+  const rssLink = $('link[type="application/rss+xml"], link[type="application/atom+xml"]').attr('href');
+  if (rssLink) {
+    const rssUrl = resolve(baseUrl, rssLink);
+    console.log(`   Found RSS link: ${rssUrl}`);
+    const rssResult = await tryRssFeedUrl(rssUrl, baseUrl);
+    if (rssResult.length > 0) {
+      console.log(`   ✅ RSS feed returned ${rssResult.length} articles`);
+      return rssResult;
+    }
+  }
+
+  // Step 3: HTML link extraction
   const articles = [];
   const seen = new Set();
   const seenTitles = new Set();
 
   $('a').each((_, el) => {
     const $a = $(el);
-    // 排除導覽列、頁首、頁尾等非文章區塊
     if ($a.closest('nav, header, footer, [class*="nav"], [class*="menu"], [class*="footer"], [class*="sidebar"]').length) return;
 
     const href = $a.attr('href') || '';
@@ -430,19 +675,15 @@ async function scrapeGeneric(source) {
     if (isJunkLink(link, baseUrl)) return;
     if (seen.has(link)) return;
 
-    // 1. 先嘗試抓取 <a> 裡面的文字
     let title = $a.text().trim().replace(/\s+/g, ' ');
 
-    // 2. 應對 LY's Note 這種卡片式排版：提取 aria-label 或 title 屬性
     if (!title || /^(read more|post link to)/i.test(title)) {
       const aria = $a.attr('aria-label') || $a.attr('title') || '';
       title = aria.replace(/post link to/i, '').trim();
     }
 
-    // 尋找文章卡片父容器
     const parent = $a.closest('article, .post, .post-entry, div[class*="item"], div[class*="card"], li');
 
-    // 3. 如果還是抓不到標題，從卡片容器中找 <h1>~<h3>
     if ((!title || isJunkTitle(title)) && parent.length) {
       const heading = parent.find('h1, h2, h3, h4, .title').first().text().trim().replace(/\s+/g, ' ');
       if (heading) title = heading;
@@ -454,14 +695,15 @@ async function scrapeGeneric(source) {
     seen.add(link);
     seenTitles.add(title);
 
-    // 尋找文章摘要 (Summary)
+    // FIX #5: Enhanced summary extraction from parent container
     let summary = '';
     if (parent.length) {
-      for (const sel of ['[class*="abstract"]', '[class*="summary"]', '[class*="excerpt"]', '[class*="desc"]']) {
+      // Try class-based selectors first
+      for (const sel of ['[class*="abstract"]', '[class*="summary"]', '[class*="excerpt"]', '[class*="desc"]', '[class*="content"]', 'p']) {
         const c = parent.find(sel).first();
         if (c.length) {
           const text = c.text().trim();
-          if (text && text !== title && text.length > 10) {
+          if (text && text !== title && text.length > 15 && !isJunkTitle(text)) {
             summary = text.length > 250 ? text.substring(0, 247) + '...' : text;
             break;
           }
@@ -469,44 +711,147 @@ async function scrapeGeneric(source) {
       }
     }
 
-    // 尋找文章日期 (Date) - 針對 LY's Note 中的 "25 December 2025" 結構優化
+    // Date extraction
     let date = '';
     if (parent.length) {
-      const dateEl = parent.find('time, [class*="date"], [class*="time"], .meta').first();
-      if (dateEl.length) {
-        date = dateEl.text().trim().split('\n')[0].substring(0, 20).trim();
+      // Try <time> element first (most reliable)
+      const timeEl = parent.find('time').first();
+      if (timeEl.length) {
+        date = timeEl.attr('datetime') || timeEl.text().trim();
+      }
+      if (!date) {
+        const dateEl = parent.find('[class*="date"], [class*="time"], .meta').first();
+        if (dateEl.length) {
+          date = dateEl.text().trim().split('\n')[0].substring(0, 30).trim();
+        }
       }
     }
 
-    // 尋找縮圖 (Image)
+    // Image extraction
     let image = '';
     if (parent.length) {
       parent.find('img').each((_, imgEl) => {
         if (image) return;
         const $img = $(imgEl);
-        const src = resolve(baseUrl, $img.attr('src') || $img.attr('data-src') || '');
+        const src = resolve(baseUrl, $img.attr('src') || $img.attr('data-src') || $img.attr('data-lazy-src') || '');
         if (isJunkImage(src)) return;
-        // 排除過小的 icon
         const w = parseInt($img.attr('width') || '999');
         const h = parseInt($img.attr('height') || '999');
         if (w < 50 || h < 50) return;
-        image = src;
+        if (isValidImageUrl(src)) image = src;
       });
     }
 
     articles.push({ title, summary, image, link, date, hash: md5(title + '||' + link) });
   });
 
+  // FIX #5 & #7: Enrich articles that are missing summary/image by fetching their detail pages
+  // Only enrich up to 10 articles to avoid too many requests
+  const toEnrich = articles.filter(a => !a.summary || !a.image).slice(0, 10);
+  if (toEnrich.length > 0) {
+    console.log(`   Enriching ${toEnrich.length} articles with detail page metadata...`);
+    // Process sequentially with small delay to be polite
+    for (const article of toEnrich) {
+      await enrichArticle(article, baseUrl);
+      await sleep(300);
+    }
+  }
+
   return articles;
+}
+
+// ══════════════════════════════════════════════════════════
+// ── FIX #7: RSS/Atom feed parser ─────────────────────────
+// ══════════════════════════════════════════════════════════
+
+async function tryRssFeed(baseUrl) {
+  const commonPaths = ['/feed', '/rss', '/atom.xml', '/feed.xml', '/rss.xml', '/index.xml'];
+  const origin = new URL(baseUrl).origin;
+
+  for (const feedPath of commonPaths) {
+    const feedUrl = origin + feedPath;
+    const result = await tryRssFeedUrl(feedUrl, baseUrl);
+    if (result.length > 0) return result;
+  }
+  return [];
+}
+
+async function tryRssFeedUrl(feedUrl, baseUrl) {
+  try {
+    const resp = await fetchWithRetry(feedUrl, {
+      timeout: 10000,
+      headers: {
+        ...BROWSER_HEADERS,
+        'Accept': 'application/rss+xml,application/atom+xml,application/xml,text/xml,*/*',
+        'Referer': baseUrl,
+      },
+    }, 1);
+
+    const xml = resp.data;
+    if (typeof xml !== 'string' || (!xml.includes('<rss') && !xml.includes('<feed') && !xml.includes('<channel'))) {
+      return [];
+    }
+
+    const $ = cheerio.load(xml, { xmlMode: true });
+    const articles = [];
+    const seen = new Set();
+
+    // RSS 2.0 format
+    $('item').each((_, el) => {
+      const $item = $(el);
+      const title = $item.find('title').first().text().trim();
+      const link = $item.find('link').first().text().trim() || $item.find('link').first().attr('href') || '';
+      const summary = $item.find('description').first().text().trim();
+      const date = $item.find('pubDate').first().text().trim();
+      const image = $item.find('enclosure[type^="image"]').attr('url') ||
+                     $item.find('media\\:content, content').attr('url') || '';
+
+      if (!title || !link || seen.has(link)) return;
+      seen.add(link);
+
+      const cleanSummary = summary.replace(/<[^>]+>/g, '').trim();
+      articles.push({
+        title,
+        summary: cleanSummary.length > 250 ? cleanSummary.substring(0, 247) + '...' : cleanSummary,
+        image: isValidImageUrl(image) ? image : '',
+        link: resolve(baseUrl, link),
+        date: date ? new Date(date).toISOString().split('T')[0] : '',
+        hash: md5(title + '||' + link),
+      });
+    });
+
+    // Atom format
+    if (articles.length === 0) {
+      $('entry').each((_, el) => {
+        const $entry = $(el);
+        const title = $entry.find('title').first().text().trim();
+        const link = $entry.find('link[rel="alternate"]').attr('href') || $entry.find('link').first().attr('href') || '';
+        const summary = $entry.find('summary, content').first().text().trim();
+        const date = $entry.find('updated, published').first().text().trim();
+
+        if (!title || !link || seen.has(link)) return;
+        seen.add(link);
+
+        const cleanSummary = summary.replace(/<[^>]+>/g, '').trim();
+        articles.push({
+          title,
+          summary: cleanSummary.length > 250 ? cleanSummary.substring(0, 247) + '...' : cleanSummary,
+          image: '',
+          link: resolve(baseUrl, link),
+          date: date ? new Date(date).toISOString().split('T')[0] : '',
+          hash: md5(title + '||' + link),
+        });
+      });
+    }
+
+    return articles;
+  } catch {
+    return [];
+  }
 }
 
 // ── Strategy router ─────────────────────────────────────
 
-/**
- * Determine which scraping strategy to use based on the source URL.
- * Users can add "strategy": "latepost" or "scicover" in sources.json,
- * or it auto-detects by domain.
- */
 async function fetchArticles(source) {
   const url = source.url;
   const strategy = source.strategy || 'auto';
@@ -519,47 +864,76 @@ async function fetchArticles(source) {
     return scrapeSciCover(source);
   }
 
-  // Default: generic HTML scraping
+  // Default: enhanced generic strategy (with RSS detection)
   return scrapeGeneric(source);
 }
 
-// ── Email template ──────────────────────────────────────
+// ══════════════════════════════════════════════════════════
+// ── FIX #2 & #6: Responsive email template ──────────────
+// ══════════════════════════════════════════════════════════
 
 function buildEmailHtml(sourceName, sourceUrl, date, articles) {
   const rows = articles.map(a => {
     const dateLabel = a.date ? `<span style="font-size:11px;color:#999;font-weight:400;margin-left:8px">${esc(a.date)}</span>` : '';
-    const imgCell = a.image
-      ? `<td style="width:140px;vertical-align:top;padding-left:16px">
-           <img src="${esc(a.image)}" alt="" style="width:140px;height:auto;max-height:100px;border-radius:6px;display:block;object-fit:cover" />
-         </td>`
+
+    // FIX #2: Image with fallback alt text, error handling, and proper sizing
+    const imgBlock = a.image
+      ? `<!--[if mso]><table width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td><![endif]-->
+         <div style="margin-top:12px">
+           <img src="${esc(a.image)}" alt="${esc(a.title)}"
+                style="width:100%;max-width:520px;height:auto;max-height:200px;border-radius:6px;display:block;object-fit:cover"
+                onerror="this.style.display='none'" />
+         </div>
+         <!--[if mso]></td></tr></table><![endif]-->`
       : '';
+
     return `
-    <tr><td style="padding:20px 0;border-bottom:1px solid #eee">
-      <table width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
-        <td style="vertical-align:top">
-          <h2 style="margin:0 0 6px;font-size:16px;font-weight:700;line-height:1.4;color:#1a1a1a">${esc(a.title)}${dateLabel}</h2>
-          ${a.summary ? `<p style="margin:0 0 10px;font-size:13px;line-height:1.6;color:#666">${esc(a.summary)}</p>` : ''}
-          <a href="${esc(a.link)}" style="font-size:13px;color:#2563eb;text-decoration:none">Read article &rarr;</a>
-        </td>
-        ${imgCell}
-      </tr></table>
+    <tr><td style="padding:16px 0;border-bottom:1px solid #eee">
+      <h2 style="margin:0 0 6px;font-size:16px;font-weight:700;line-height:1.4;color:#1a1a1a">${esc(a.title)}${dateLabel}</h2>
+      ${a.summary ? `<p style="margin:0 0 8px;font-size:13px;line-height:1.6;color:#666">${esc(a.summary)}</p>` : ''}
+      <a href="${esc(a.link)}" style="font-size:13px;color:#2563eb;text-decoration:none">Read article &rarr;</a>
+      ${imgBlock}
     </td></tr>`;
   }).join('');
 
-  return `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
-<body style="margin:0;padding:0;background:#f5f5f5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Noto Sans SC',sans-serif">
-<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f5f5f5">
-<tr><td align="center" style="padding:24px 16px">
-  <table width="600" cellpadding="0" cellspacing="0" border="0" style="background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.08)">
-    <tr><td style="background:#111;padding:24px 28px">
+  // FIX #6: Fully responsive email template - single column, fluid width
+  return `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="x-apple-disable-message-reformatting">
+<!--[if !mso]><!-->
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<!--<![endif]-->
+<style type="text/css">
+  /* Reset */
+  body, table, td, a { -webkit-text-size-adjust: 100%; -ms-text-size-adjust: 100%; }
+  table, td { mso-table-lspace: 0pt; mso-table-rspace: 0pt; }
+  img { -ms-interpolation-mode: bicubic; border: 0; outline: none; text-decoration: none; }
+  body { margin: 0; padding: 0; width: 100% !important; height: 100% !important; }
+
+  /* Mobile responsive */
+  @media only screen and (max-width: 620px) {
+    .email-container { width: 100% !important; max-width: 100% !important; }
+    .email-padding { padding-left: 16px !important; padding-right: 16px !important; }
+    .email-header { padding: 20px 16px !important; }
+    h1 { font-size: 18px !important; }
+    h2 { font-size: 15px !important; }
+    img { max-width: 100% !important; height: auto !important; }
+  }
+</style>
+</head>
+<body style="margin:0;padding:0;background:#f5f5f5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Noto Sans SC','Noto Sans TC',sans-serif;-webkit-font-smoothing:antialiased">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f5f5f5">
+<tr><td align="center" style="padding:24px 12px">
+  <table role="presentation" class="email-container" width="580" cellpadding="0" cellspacing="0" border="0" style="background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.08);max-width:580px;width:100%">
+    <tr><td class="email-header" style="background:#111;padding:24px 24px">
       <h1 style="margin:0;font-size:20px;font-weight:700;color:#fff">${esc(sourceName)}</h1>
       <p style="margin:4px 0 0;font-size:13px;color:#999">${date} Updates &middot; ${articles.length} article${articles.length > 1 ? 's' : ''}</p>
-      <a href="${esc(sourceUrl)}" style="font-size:12px;color:#6b9aff;text-decoration:none;display:inline-block;margin-top:6px">${esc(sourceUrl)}</a>
+      <a href="${esc(sourceUrl)}" style="font-size:12px;color:#6b9aff;text-decoration:none;display:inline-block;margin-top:6px;word-break:break-all">${esc(sourceUrl)}</a>
     </td></tr>
-    <tr><td style="padding:8px 28px 20px">
-      <table width="100%" cellpadding="0" cellspacing="0" border="0">${rows}</table>
+    <tr><td class="email-padding" style="padding:8px 24px 20px">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">${rows}</table>
     </td></tr>
-    <tr><td style="background:#fafafa;padding:16px 28px;border-top:1px solid #eee">
+    <tr><td style="background:#fafafa;padding:16px 24px;border-top:1px solid #eee">
       <p style="margin:0;font-size:11px;color:#999;text-align:center">Sent by Newsletter Manager via GitHub Actions</p>
     </td></tr>
   </table>
@@ -589,7 +963,7 @@ async function main() {
       console.log(`   Found ${articles.length} articles`);
       if (articles.length > 0) {
         console.log('   Articles:');
-        articles.forEach((a, i) => console.log(`     ${i + 1}. ${a.date ? `[${a.date}] ` : ''}${a.title}${a.image ? ' [img]' : ''}`));
+        articles.forEach((a, i) => console.log(`     ${i + 1}. ${a.date ? `[${a.date}] ` : ''}${a.title}${a.summary ? ' [summary]' : ''}${a.image ? ' [img]' : ''}`));
       }
     } catch (err) {
       console.error(`   ❌ Failed to fetch: ${err.message}`);
@@ -641,10 +1015,8 @@ async function main() {
     for (let i = 0; i < validSubscribers.length; i++) {
       const email = validSubscribers[i];
       try {
-        // Respect Resend rate limit: 2 req/s → wait 600ms between sends
-        if (i > 0) await sleep(600);
-
         console.log(`   → Sending to ${email}...`);
+        // FIX #4: sendWithRetry now handles global rate limiting internally
         const result = await sendWithRetry(resend, {
           from: `Newsletter Manager <${FROM_EMAIL}>`,
           to: email,
@@ -674,6 +1046,9 @@ async function main() {
       console.log('   ⚠️  No emails were delivered. Check your Resend API key and FROM_EMAIL.');
       console.log('   💡 Tip: With onboarding@resend.dev, you can only send to your Resend account email.');
     }
+
+    // FIX #4: Wait between sources to avoid rate limiting
+    await sleep(2000);
   }
 
   // Save cache
