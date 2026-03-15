@@ -192,6 +192,27 @@ function isValidImageUrl(url) {
   }
 }
 
+// Check if an image URL is actually accessible (HEAD request)
+async function isImageAccessible(url) {
+  if (!isValidImageUrl(url)) return false;
+  try {
+    const resp = await axios.head(url, {
+      timeout: 8000,
+      headers: {
+        'User-Agent': BROWSER_HEADERS['User-Agent'],
+        'Accept': 'image/*,*/*;q=0.8',
+      },
+      maxRedirects: 3,
+      validateStatus: (s) => s < 400,
+    });
+    const ct = (resp.headers['content-type'] || '').toLowerCase();
+    // Must be an image content type
+    return ct.startsWith('image/');
+  } catch {
+    return false;
+  }
+}
+
 // ══════════════════════════════════════════════════════════
 // ── FIX #7: Universal metadata extraction ────────────────
 // ══════════════════════════════════════════════════════════
@@ -376,7 +397,8 @@ async function scrapeLatePost(source) {
 
     let title = item.title || '';
     let date = item.release_time || '';
-    let cover = item.cover ? resolve(baseUrl, item.cover) : '';
+    let apiCover = item.cover ? resolve(baseUrl, item.cover) : '';
+    let ogCover = '';
     let summary = item.abstract || '';
 
     // Fetch detail page for better date and cover image
@@ -393,18 +415,17 @@ async function scrapeLatePost(source) {
       const detailDate = $d('.article-header-date').text().trim();
       if (detailDate) date = detailDate;
 
-      if (!cover) {
-        // Try OG image first
-        const ogImg = $d('meta[property="og:image"]').attr('content');
-        if (ogImg) {
-          cover = resolve(baseUrl, ogImg);
-        } else {
-          $d('img[src*="cover"]').each((_, el) => {
-            if (cover) return;
-            const src = $d(el).attr('src') || '';
-            if (src.includes('cover')) cover = resolve(baseUrl, src);
-          });
-        }
+      // Always try to get OG image (more reliable for external access)
+      const ogImg = $d('meta[property="og:image"]').attr('content');
+      if (ogImg) {
+        ogCover = resolve(baseUrl, ogImg);
+      }
+      if (!ogCover) {
+        $d('img[src*="cover"]').each((_, el) => {
+          if (ogCover) return;
+          const src = $d(el).attr('src') || '';
+          if (src.includes('cover')) ogCover = resolve(baseUrl, src);
+        });
       }
 
       // Enhance summary from OG if empty
@@ -423,10 +444,25 @@ async function scrapeLatePost(source) {
       continue;
     }
 
+    // Pick the best accessible cover image: prefer OG image, fall back to API cover
+    let cover = '';
+    const candidates = [ogCover, apiCover].filter(isValidImageUrl);
+    for (const candidate of candidates) {
+      if (await isImageAccessible(candidate)) {
+        cover = candidate;
+        break;
+      }
+    }
+    if (!cover && candidates.length > 0) {
+      // If HEAD check fails (e.g. server blocks HEAD), use first valid URL as fallback
+      cover = candidates[0];
+      console.log(`   Note: could not verify image for "${title.substring(0, 30)}", using unverified URL`);
+    }
+
     articles.push({
       title,
       summary: summary.length > 250 ? summary.substring(0, 247) + '...' : summary,
-      image: isValidImageUrl(cover) ? cover : '',
+      image: cover,
       link: detailUrl,
       date,
       hash: md5(title + '||' + detailUrl),
@@ -926,13 +962,12 @@ function buildEmailHtml(sourceName, sourceUrl, date, articles) {
   const rows = articles.map(a => {
     const dateLabel = a.date ? `<span style="font-size:11px;color:#999;font-weight:400;margin-left:8px">${esc(a.date)}</span>` : '';
 
-    // FIX #2: Image with fallback alt text, error handling, and proper sizing
+    // FIX #2: Image with fallback alt text and proper sizing (no JS onerror — stripped by email clients)
     const imgBlock = a.image
       ? `<!--[if mso]><table width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td><![endif]-->
          <div style="margin-top:12px">
-           <img src="${esc(a.image)}" alt="${esc(a.title)}"
-                style="width:100%;max-width:520px;height:auto;max-height:200px;border-radius:6px;display:block;object-fit:cover"
-                onerror="this.style.display='none'" />
+           <img src="${esc(a.image)}" alt=""
+                style="width:100%;max-width:520px;height:auto;max-height:200px;border-radius:6px;display:block;object-fit:cover" />
          </div>
          <!--[if mso]></td></tr></table><![endif]-->`
       : '';
