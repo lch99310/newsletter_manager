@@ -12,7 +12,8 @@
     },
     {
       "url": "https://lch99310.github.io/chunghao_lee/posts/",
-      "name": "CH Lee's Note"
+      "name": "CH Lee's Note",
+      "extra_paths": ["/chunghao_lee/portfolio/"]
     },
     {
       "url": "https://lywgit.github.io/posts/",

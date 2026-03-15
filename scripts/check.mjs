@@ -524,12 +524,27 @@ async function scrapeSciCover(source) {
       if (seen.has(link)) continue;
       seen.add(link);
 
-      // FIX #2: Better image resolution with validation
+      // FIX: Resolve image URLs correctly
+      // cover_url values are like "data/images/science/xxx-cover.jpg" (already include "data/" prefix)
+      // So we resolve against baseUrl (not baseUrl/data/ which would double it)
+      // Also use raw.githubusercontent.com for reliable image hosting (GitHub Pages may 403)
       let image = '';
       for (const field of ['cover_url', 'cover_image', 'cover_image_local', 'image', 'thumbnail']) {
         const val = item[field];
         if (val && typeof val === 'string') {
-          image = val.startsWith('http') ? val : resolve(`${baseUrl}/data/`, val);
+          if (val.startsWith('http')) {
+            image = val;
+          } else {
+            // Convert GitHub Pages relative path to raw.githubusercontent.com URL
+            // e.g. "data/images/science/xxx.jpg" → "https://raw.githubusercontent.com/{user}/{repo}/main/data/images/..."
+            const ghPagesMatch = baseUrl.match(/https?:\/\/([^.]+)\.github\.io\/([^/]+)/);
+            if (ghPagesMatch) {
+              const [, user, repo] = ghPagesMatch;
+              image = `https://raw.githubusercontent.com/${user}/${repo}/main/${val}`;
+            } else {
+              image = resolve(baseUrl + '/', val);
+            }
+          }
           if (isValidImageUrl(image)) break;
           image = '';
         }
@@ -643,107 +658,142 @@ async function scrapeGeneric(source) {
     return rssArticles;
   }
 
-  // Step 2: Fall back to HTML scraping
-  const resp = await fetchWithRetry(baseUrl, {
-    headers: { ...BROWSER_HEADERS, 'Referer': new URL(baseUrl).origin + '/' },
-  });
-  const $ = cheerio.load(resp.data);
-
-  // Check for RSS link in HTML head
-  const rssLink = $('link[type="application/rss+xml"], link[type="application/atom+xml"]').attr('href');
-  if (rssLink) {
-    const rssUrl = resolve(baseUrl, rssLink);
-    console.log(`   Found RSS link: ${rssUrl}`);
-    const rssResult = await tryRssFeedUrl(rssUrl, baseUrl);
-    if (rssResult.length > 0) {
-      console.log(`   ✅ RSS feed returned ${rssResult.length} articles`);
-      return rssResult;
+  // Collect all page URLs to scrape (primary + extra_paths)
+  const pageUrls = [baseUrl];
+  if (source.extra_paths && Array.isArray(source.extra_paths)) {
+    const origin = new URL(baseUrl).origin;
+    const basePath = new URL(baseUrl).pathname.replace(/\/[^/]*\/?$/, ''); // parent path
+    for (const extraPath of source.extra_paths) {
+      // Support both absolute paths ("/portfolio/") and relative ("portfolio/")
+      const extraUrl = extraPath.startsWith('/')
+        ? origin + extraPath
+        : resolve(baseUrl.replace(/\/?$/, '/'), extraPath);
+      if (extraUrl && !pageUrls.includes(extraUrl)) {
+        pageUrls.push(extraUrl);
+      }
     }
+    console.log(`   Scraping ${pageUrls.length} page(s): ${pageUrls.map(u => new URL(u).pathname).join(', ')}`);
   }
 
-  // Step 3: HTML link extraction
   const articles = [];
   const seen = new Set();
   const seenTitles = new Set();
+  let foundRssLink = false;
 
-  $('a').each((_, el) => {
-    const $a = $(el);
-    if ($a.closest('nav, header, footer, [class*="nav"], [class*="menu"], [class*="footer"], [class*="sidebar"]').length) return;
-
-    const href = $a.attr('href') || '';
-    const link = resolve(baseUrl, href);
-    if (isJunkLink(link, baseUrl)) return;
-    if (seen.has(link)) return;
-
-    let title = $a.text().trim().replace(/\s+/g, ' ');
-
-    if (!title || /^(read more|post link to)/i.test(title)) {
-      const aria = $a.attr('aria-label') || $a.attr('title') || '';
-      title = aria.replace(/post link to/i, '').trim();
+  for (const pageUrl of pageUrls) {
+    // Step 2: Fetch HTML page
+    let $;
+    try {
+      const resp = await fetchWithRetry(pageUrl, {
+        headers: { ...BROWSER_HEADERS, 'Referer': new URL(pageUrl).origin + '/' },
+      });
+      $ = cheerio.load(resp.data);
+    } catch (err) {
+      console.log(`   ⚠️  Failed to fetch ${new URL(pageUrl).pathname}: ${err.message}`);
+      continue;
     }
 
-    const parent = $a.closest('article, .post, .post-entry, div[class*="item"], div[class*="card"], li');
-
-    if ((!title || isJunkTitle(title)) && parent.length) {
-      const heading = parent.find('h1, h2, h3, h4, .title').first().text().trim().replace(/\s+/g, ' ');
-      if (heading) title = heading;
+    // Check for RSS link in HTML head (only once)
+    if (!foundRssLink) {
+      const rssLink = $('link[type="application/rss+xml"], link[type="application/atom+xml"]').attr('href');
+      if (rssLink) {
+        foundRssLink = true;
+        const rssUrl = resolve(pageUrl, rssLink);
+        console.log(`   Found RSS link: ${rssUrl}`);
+        const rssResult = await tryRssFeedUrl(rssUrl, baseUrl);
+        if (rssResult.length > 0) {
+          console.log(`   ✅ RSS feed returned ${rssResult.length} articles`);
+          return rssResult;
+        }
+      }
     }
 
-    if (isJunkTitle(title)) return;
-    if (seenTitles.has(title)) return;
+    // Step 3: HTML link extraction from this page
+    const siteOrigin = new URL(baseUrl).origin;
+    $('a').each((_, el) => {
+      const $a = $(el);
+      if ($a.closest('nav, header, footer, [class*="nav"], [class*="menu"], [class*="footer"], [class*="sidebar"]').length) return;
 
-    seen.add(link);
-    seenTitles.add(title);
+      const href = $a.attr('href') || '';
+      const link = resolve(pageUrl, href);
+      // Allow links from the same origin (not just baseUrl path)
+      if (!link) return;
+      try {
+        if (new URL(link).origin !== siteOrigin) return;
+      } catch { return; }
+      const pathname = new URL(link).pathname;
+      if (pathname === '/' || pathname === '') return;
+      for (const p of JUNK_LINK_PATTERNS) { if (p.test(link)) return; }
+      if (seen.has(link)) return;
 
-    // FIX #5: Enhanced summary extraction from parent container
-    let summary = '';
-    if (parent.length) {
-      // Try class-based selectors first
-      for (const sel of ['[class*="abstract"]', '[class*="summary"]', '[class*="excerpt"]', '[class*="desc"]', '[class*="content"]', 'p']) {
-        const c = parent.find(sel).first();
-        if (c.length) {
-          const text = c.text().trim();
-          if (text && text !== title && text.length > 15 && !isJunkTitle(text)) {
-            summary = text.length > 250 ? text.substring(0, 247) + '...' : text;
-            break;
+      let title = $a.text().trim().replace(/\s+/g, ' ');
+
+      if (!title || /^(read more|post link to)/i.test(title)) {
+        const aria = $a.attr('aria-label') || $a.attr('title') || '';
+        title = aria.replace(/post link to/i, '').trim();
+      }
+
+      const parent = $a.closest('article, .post, .post-entry, div[class*="item"], div[class*="card"], li');
+
+      if ((!title || isJunkTitle(title)) && parent.length) {
+        const heading = parent.find('h1, h2, h3, h4, .title').first().text().trim().replace(/\s+/g, ' ');
+        if (heading) title = heading;
+      }
+
+      if (isJunkTitle(title)) return;
+      if (seenTitles.has(title)) return;
+
+      seen.add(link);
+      seenTitles.add(title);
+
+      // Enhanced summary extraction from parent container
+      let summary = '';
+      if (parent.length) {
+        for (const sel of ['[class*="abstract"]', '[class*="summary"]', '[class*="excerpt"]', '[class*="desc"]', '[class*="content"]', 'p']) {
+          const c = parent.find(sel).first();
+          if (c.length) {
+            const text = c.text().trim();
+            if (text && text !== title && text.length > 15 && !isJunkTitle(text)) {
+              summary = text.length > 250 ? text.substring(0, 247) + '...' : text;
+              break;
+            }
           }
         }
       }
-    }
 
-    // Date extraction
-    let date = '';
-    if (parent.length) {
-      // Try <time> element first (most reliable)
-      const timeEl = parent.find('time').first();
-      if (timeEl.length) {
-        date = timeEl.attr('datetime') || timeEl.text().trim();
-      }
-      if (!date) {
-        const dateEl = parent.find('[class*="date"], [class*="time"], .meta').first();
-        if (dateEl.length) {
-          date = dateEl.text().trim().split('\n')[0].substring(0, 30).trim();
+      // Date extraction
+      let date = '';
+      if (parent.length) {
+        const timeEl = parent.find('time').first();
+        if (timeEl.length) {
+          date = timeEl.attr('datetime') || timeEl.text().trim();
+        }
+        if (!date) {
+          const dateEl = parent.find('[class*="date"], [class*="time"], .meta').first();
+          if (dateEl.length) {
+            date = dateEl.text().trim().split('\n')[0].substring(0, 30).trim();
+          }
         }
       }
-    }
 
-    // Image extraction
-    let image = '';
-    if (parent.length) {
-      parent.find('img').each((_, imgEl) => {
-        if (image) return;
-        const $img = $(imgEl);
-        const src = resolve(baseUrl, $img.attr('src') || $img.attr('data-src') || $img.attr('data-lazy-src') || '');
-        if (isJunkImage(src)) return;
-        const w = parseInt($img.attr('width') || '999');
-        const h = parseInt($img.attr('height') || '999');
-        if (w < 50 || h < 50) return;
-        if (isValidImageUrl(src)) image = src;
-      });
-    }
+      // Image extraction
+      let image = '';
+      if (parent.length) {
+        parent.find('img').each((_, imgEl) => {
+          if (image) return;
+          const $img = $(imgEl);
+          const src = resolve(pageUrl, $img.attr('src') || $img.attr('data-src') || $img.attr('data-lazy-src') || '');
+          if (isJunkImage(src)) return;
+          const w = parseInt($img.attr('width') || '999');
+          const h = parseInt($img.attr('height') || '999');
+          if (w < 50 || h < 50) return;
+          if (isValidImageUrl(src)) image = src;
+        });
+      }
 
-    articles.push({ title, summary, image, link, date, hash: md5(title + '||' + link) });
-  });
+      articles.push({ title, summary, image, link, date, hash: md5(title + '||' + link) });
+    });
+  } // end of pageUrls loop
 
   // FIX #5 & #7: Enrich articles that are missing summary/image by fetching their detail pages
   // Only enrich up to 10 articles to avoid too many requests
